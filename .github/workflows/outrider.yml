@@ -16,6 +16,15 @@ on:
   #     # Daily at 14:00 UTC
   #     - cron: '0 14 * * *'
   workflow_dispatch:
+    inputs:
+      pin-method:
+        description: 'Optional arxiv_id or method query to implement directly (bypasses selection).'
+        required: false
+        default: ''
+      claude-timeout:
+        description: 'Wall-clock seconds for the Claude Code agent calls (preflight + implementation).'
+        required: false
+        default: '900'
 
 jobs:
   recommend:
@@ -41,6 +50,39 @@ jobs:
           token="$(curl -sf -X POST             -H "Authorization: Bearer ${{ secrets.REMYX_API_KEY }}"             -H "Content-Type: application/json"             -d "{\"repo\": \"${{ github.repository }}\"}"             "https://engine.remyx.ai/api/v1.0/github/installation-token"             | python3 -c "import sys, json; print(json.load(sys.stdin).get('token', ''))")" || token=""
           echo "::add-mask::$token"
           echo "token=$token" >> "$GITHUB_OUTPUT"
+      - name: Install cocoindex-code as a Claude Code skill
+        run: |
+          git clone --depth 1 https://github.com/cocoindex-io/cocoindex-code /tmp/cocoindex-code
+          pipx install 'cocoindex-code[full]'
+          mkdir -p ~/.claude/skills/
+          ln -sfn /tmp/cocoindex-code ~/.claude/skills/cocoindex-code
+      - name: Write ENVIRONMENTS.md for Outrider
+        run: |
+          cat > "$GITHUB_WORKSPACE/ENVIRONMENTS.md" <<'EOF'
+          ---
+          type: Workflow Environment
+          title: cocoindex-code AST search available
+          description: cocoindex-code AST-based semantic code search is pre-installed as a Claude Code skill.
+          resource: https://github.com/cocoindex-io/cocoindex-code
+          tags: [outrider, environment, cocoindex-code, ast-search]
+          timestamp: 2026-07-01T00:00:00Z
+          ---
+
+          # Environment: cocoindex-code AST search
+
+          ## Available tools
+
+          - **`ccc` CLI** (AST-based semantic code search across the cloned repo).
+            Prefer over reading entire large files when locating functions,
+            classes, or specific code patterns. Multi-language via tree-sitter.
+
+          ## Suggested use during implementation
+
+          - For "find the function that does X" queries, invoke the semantic-search
+            skill rather than Read/Grep on speculation.
+          - For files > 500 LOC where you only need one function, prefer AST search
+            + targeted Read over reading the whole file.
+          EOF
       - uses: remyxai/outrider@v1
         with:
           interest-id: 0ca0c752-ab5c-44b5-a097-42de9dc69fdd
@@ -52,3 +94,5 @@ jobs:
           # (e.g. a manual re-run after the first auto-PR). Per-paper dedup
           # (open PR / Issue for the same arxiv_id) still prevents duplicates.
           rate-limit-days: '0'
+          pin-method: ${{ inputs.pin-method }}
+          claude-timeout: ${{ inputs.claude-timeout }}
