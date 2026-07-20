@@ -12,6 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""AdaMoLE tuner layers (Adaptive Mixture of LoRA Experts, https://arxiv.org/abs/2405.00361).
+
+Scope: this integration deliberately implements the paper's core mechanism — per-layer LoRA experts mixed
+by a learned per-token router, with a learnable activation threshold that sparsifies expert activation —
+wired into peft's tuner registry and covered by unit tests. The paper's benchmark harness and ablation
+studies are intentionally out of scope for this repository integration.
+"""
+
 import math
 from typing import Any, Optional
 
