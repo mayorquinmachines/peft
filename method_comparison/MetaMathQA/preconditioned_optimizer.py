@@ -28,6 +28,12 @@ training markedly less sensitive to the learning-rate choice.
 
 Reference:
     - Riemannian Preconditioned LoRA for Fine-Tuning Foundation Models: https://arxiv.org/abs/2402.02347
+
+Scope:
+    This integration deliberately implements the paper's core contribution — the ``r x r`` Riemannian /
+    scaled-gradient preconditioner applied to the LoRA ``A``/``B`` gradients before the base optimizer's
+    step — with unit tests covering the preconditioned directions. The paper's convergence analysis and
+    its full fine-tuning benchmark sweeps are intentionally out of scope for this repository integration.
 """
 
 from collections.abc import Callable
