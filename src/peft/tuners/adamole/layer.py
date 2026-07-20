@@ -14,10 +14,11 @@
 
 """AdaMoLE tuner layers (Adaptive Mixture of LoRA Experts, https://arxiv.org/abs/2405.00361).
 
-Scope: this integration deliberately implements the paper's core mechanism — per-layer LoRA experts mixed
-by a learned per-token router, with a learnable activation threshold that sparsifies expert activation —
-wired into peft's tuner registry and covered by unit tests. The paper's benchmark harness and ablation
-studies are intentionally out of scope for this repository integration.
+Scope: this integration implements the paper's core mechanism — per-layer LoRA experts combined by a softmax
+router, with an input-adaptive activation threshold produced by a dedicated threshold network (a linear layer
+followed by a sigmoid, scaled by `threshold_max`). Experts whose routing weight reaches the threshold are
+activated and combined with renormalized, threshold-subtracted weights. The paper's load-balancing auxiliary
+loss (which requires trainer-side integration) and its benchmark harness are intentionally out of scope.
 """
 
 import math
@@ -34,9 +35,9 @@ from .config import AdaMoLEConfig
 
 class AdaMoLELayer(BaseTunerLayer):
     # All names of layers that may contain (trainable) adapter weights
-    adapter_layer_names = ("adamole_A", "adamole_B", "adamole_router")
+    adapter_layer_names = ("adamole_A", "adamole_B", "adamole_router", "adamole_threshold")
     # All names of other parameters that may contain adapter-related parameters
-    other_param_names = ("adamole_threshold",)
+    other_param_names = ()
 
     def __init__(self, base_layer: nn.Module, **kwargs) -> None:
         self.base_layer = base_layer
@@ -45,13 +46,13 @@ class AdaMoLELayer(BaseTunerLayer):
         self.adamole_alpha: dict = {}
         self.adamole_scaling: dict = {}
         self.adamole_router_temperature: dict = {}
-        self.adamole_threshold_tau: dict = {}
+        self.adamole_threshold_max: dict = {}
         self.adamole_use_threshold: dict = {}
-        # Per adapter: a ModuleList of N expert (lora_A, lora_B) pairs, a router module and one threshold parameter.
+        # Per adapter: a ModuleList of N expert (lora_A, lora_B) pairs, a router module and a threshold network.
         self.adamole_A = nn.ModuleDict({})
         self.adamole_B = nn.ModuleDict({})
         self.adamole_router = nn.ModuleDict({})
-        self.adamole_threshold = nn.ParameterDict({})
+        self.adamole_threshold = nn.ModuleDict({})
         # Mark the weight as unmerged
         self._disable_adapters = False
         self.merged_adapters = []
@@ -80,7 +81,12 @@ class AdaMoLELayer(BaseTunerLayer):
         self.adamole_alpha[adapter_name] = config.lora_alpha
         self.adamole_scaling[adapter_name] = config.lora_alpha / r
         self.adamole_router_temperature[adapter_name] = config.router_temperature
-        self.adamole_threshold_tau[adapter_name] = config.threshold_tau
+        # Default 1 / num_experts guarantees at least one active expert per token (the largest softmax weight is
+        # always >= 1 / num_experts, and the sigmoid keeps the threshold strictly below its bound).
+        if config.threshold_max is None:
+            self.adamole_threshold_max[adapter_name] = 1.0 / num_experts
+        else:
+            self.adamole_threshold_max[adapter_name] = config.threshold_max
         self.adamole_use_threshold[adapter_name] = config.use_threshold
 
         # N expert (lora_A, lora_B) pairs, the same A/B convention as LoRA.
@@ -92,8 +98,9 @@ class AdaMoLELayer(BaseTunerLayer):
         )
         # Router producing per-token expert logits.
         self.adamole_router[adapter_name] = self._build_router(config)
-        # The single learnable per-token activation threshold.
-        self.adamole_threshold[adapter_name] = nn.Parameter(torch.tensor(float(config.threshold_init)))
+        # The threshold network: a linear layer followed by a sigmoid (applied in compute_delta), mapping the input
+        # to an adaptive activation threshold in (0, threshold_max).
+        self.adamole_threshold[adapter_name] = nn.Linear(self.in_features, 1)
 
         self.reset_adamole_parameters(adapter_name)
 
@@ -116,15 +123,18 @@ class AdaMoLELayer(BaseTunerLayer):
             nn.init.kaiming_uniform_(module.weight, a=math.sqrt(5))
         for module in self.adamole_B[adapter_name]:
             nn.init.zeros_(module.weight)
-        # The router starts from the default linear init so the softmax gate is non-degenerate.
-        # The threshold keeps its configured initial value.
+        # The router and the threshold network start from the default linear init so both gates are non-degenerate.
 
     def compute_delta(self, adapter_name: str, x: torch.Tensor) -> torch.Tensor:
         """Return the AdaMoLE delta (shape ``x.shape[:-1] + (out_features,)``) for ``x``.
 
-        Implements dense softmax routing over the expert deltas and, optionally, the learnable per-token activation
-        threshold. The threshold gate is a hard comparison in the forward pass (so masked tokens contribute exactly
-        zero) wrapped in a straight-through estimator so the threshold stays trainable.
+        Implements the paper's adaptive expert selection: the softmax router produces per-token expert weights
+        ``p_i`` and the threshold network produces an input-adaptive threshold ``tau = threshold_max *
+        sigmoid(W_tau x + b_tau)``. Every expert with ``p_i >= tau`` is activated (``m_i = 1``) and the delta is the
+        renormalized, threshold-subtracted mixture ``sum_i alpha_i * B_i A_i x`` with ``alpha_i = m_i * (p_i - tau) /
+        sum_j m_j * (p_j - tau)``. Tokens for which no expert reaches the threshold contribute exactly zero. Because
+        ``tau`` enters ``alpha_i`` differentiably, the threshold network is trainable without a straight-through
+        estimator. With ``use_threshold=False`` this reduces to the dense softmax mixture ``alpha_i = p_i``.
         """
         lora_A = self.adamole_A[adapter_name]
         lora_B = self.adamole_B[adapter_name]
@@ -138,23 +148,26 @@ class AdaMoLELayer(BaseTunerLayer):
         route_dtype = next(router.parameters()).dtype
         gate = torch.softmax(router(x.to(route_dtype)) / temperature, dim=-1)
 
+        if use_threshold:
+            threshold_net = self.adamole_threshold[adapter_name]
+            # Input-adaptive threshold in (0, threshold_max): [..., 1]
+            tau = (
+                torch.sigmoid(threshold_net(x.to(threshold_net.weight.dtype)))
+                * self.adamole_threshold_max[adapter_name]
+            )
+            # Per-expert activation m_i * (p_i - tau): exactly zero for experts below the threshold.
+            weights = (gate - tau).clamp_min(0.0)
+            normalizer = weights.sum(dim=-1, keepdim=True)
+            # A token with no active expert (normalizer == 0) contributes zero.
+            alpha = weights / normalizer.clamp_min(torch.finfo(weights.dtype).tiny)
+        else:
+            alpha = gate
+
         # Expert deltas stacked along a new last dimension: [..., out_features, num_experts]
         expert_dtype = lora_A[0].weight.dtype
         xc = x.to(expert_dtype)
         expert_out = torch.stack([lora_B[e](lora_A[e](xc)) for e in range(num_experts)], dim=-1)
-        delta = (expert_out * gate.unsqueeze(-2)).sum(dim=-1)
-
-        if use_threshold:
-            threshold = self.adamole_threshold[adapter_name]
-            tau = self.adamole_threshold_tau[adapter_name]
-            top = gate.max(dim=-1).values
-            # Hard mask in the forward pass -> exact sparsity for tokens below threshold.
-            mask_hard = (top > threshold).to(delta.dtype)
-            # Straight-through: the forward value equals mask_hard, but the gradient flows through a smooth sigmoid
-            # surrogate so the threshold parameter receives a non-zero gradient.
-            mask_soft = torch.sigmoid((top - threshold) / tau)
-            active = mask_hard + mask_soft - mask_soft.detach()
-            delta = delta * active.unsqueeze(-1)
+        delta = (expert_out * alpha.unsqueeze(-2)).sum(dim=-1)
 
         return delta * scaling
 

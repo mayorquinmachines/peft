@@ -25,10 +25,12 @@ class AdaMoLEConfig(PeftConfig):
     This is the configuration class to store the configuration of a [`AdaMoLEModel`].
 
     AdaMoLE (Adaptive Mixture of LoRA Experts, https://arxiv.org/abs/2405.00361) replaces the single low-rank update of
-    a targeted layer with a small set of LoRA *experts*. A learned router produces per-token expert weights and the
-    expert outputs are mixed densely. On top of that, a single **learnable activation threshold** zeroes the mixture for
-    tokens whose strongest expert routing weight falls below the threshold, giving sparse, input-adaptive expert
-    activation.
+    a targeted layer with a small set of LoRA *experts*. A learned softmax router produces per-token expert weights.
+    Instead of a static top-k strategy, a dedicated **threshold network** (a linear layer followed by a sigmoid,
+    scaled by `threshold_max`) maps each input to an adaptive activation threshold. Every expert whose routing weight
+    reaches the threshold is activated, so the number of active experts varies with the input. The activated experts
+    are combined with renormalized, threshold-subtracted weights, `alpha_i = m_i * (p_i - tau) / sum_j m_j * (p_j -
+    tau)`, which also keeps the threshold network trainable.
 
     Args:
         r (`int`):
@@ -42,14 +44,12 @@ class AdaMoLEConfig(PeftConfig):
             the input features to `num_experts` logits.
         router_temperature (`float`):
             Temperature applied to the router logits before the softmax.
-        threshold_init (`float`):
-            Initial value of the learnable per-token activation threshold. A token contributes the expert mixture only
-            if its largest softmax weight exceeds this threshold.
-        threshold_tau (`float`):
-            Sharpness of the straight-through sigmoid used to keep the (otherwise non-differentiable) threshold
-            trainable. Smaller values give a steeper gate.
+        threshold_max (`Optional[float]`):
+            Upper bound of the input-adaptive activation threshold produced by the threshold network. When `None` (the
+            default) it is set to `1 / num_experts`, which guarantees that at least one expert is activated per token
+            since the largest softmax weight is always `>= 1 / num_experts`.
         use_threshold (`bool`):
-            Whether to apply the threshold gate at all. Set to `False` to recover plain dense mixture-of-experts
+            Whether to apply the adaptive threshold at all. Set to `False` to recover plain dense mixture-of-experts
             routing.
         target_modules (`Union[list[str], str]`):
             List of module names or regex of module names to replace with AdaMoLE. Only `nn.Linear` layers are
@@ -77,17 +77,16 @@ class AdaMoLEConfig(PeftConfig):
         metadata={"help": "Hidden size of the two-layer router MLP; None uses a single linear router."},
     )
     router_temperature: float = field(default=1.0, metadata={"help": "Temperature of the router softmax."})
-    threshold_init: float = field(
-        default=0.5,
-        metadata={"help": "Initial value of the learnable per-token activation threshold."},
-    )
-    threshold_tau: float = field(
-        default=0.1,
-        metadata={"help": "Sharpness of the straight-through sigmoid that keeps the threshold trainable."},
+    threshold_max: Optional[float] = field(
+        default=None,
+        metadata={
+            "help": "Upper bound of the adaptive activation threshold; None uses 1 / num_experts, which guarantees "
+            "at least one active expert per token."
+        },
     )
     use_threshold: bool = field(
         default=True,
-        metadata={"help": "Whether to apply the learnable activation threshold gate."},
+        metadata={"help": "Whether to apply the adaptive activation threshold gate."},
     )
     target_modules: Optional[Union[list[str], str]] = field(
         default=None,
@@ -143,4 +142,9 @@ class AdaMoLEConfig(PeftConfig):
         if self.num_experts <= 0:
             raise ValueError(
                 f"`num_experts` should be a positive integer value but the value passed is {self.num_experts}"
+            )
+
+        if self.threshold_max is not None and self.threshold_max <= 0:
+            raise ValueError(
+                f"`threshold_max` should be a positive value but the value passed is {self.threshold_max}"
             )
