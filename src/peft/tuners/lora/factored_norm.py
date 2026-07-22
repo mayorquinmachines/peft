@@ -29,26 +29,38 @@ reducing the transient memory from O(out_features * in_features) to O((out_featu
 
 Adapted from "Scaling DoRA: High-Rank Adaptation via Factored Norms and Fused Kernels"
 (https://arxiv.org/abs/2603.22276v1). Unlike the paper, no custom fused kernels are used — the factorization alone
-already removes the memory bottleneck. The factored path is only used for large layers (see
-`FACTORED_NORM_MIN_NUMEL`); smaller layers keep the original dense computation, which is bitwise-identical to
-previous PEFT releases.
+already removes the memory bottleneck. The factored path is used unconditionally and, following the reference
+implementation, the norm is accumulated in fp32 (with autocast disabled) for bf16/fp16 weights, since the expansion
+above is prone to floating point cancellation (hence the `clamp_min(0)`).
 """
+
+from contextlib import contextmanager
 
 import torch
 
 
-FACTORED_NORM_MIN_NUMEL = 2**24
-"""Minimum number of elements of the dense `lora_B @ lora_A` product for the factored weight norm to kick in.
-
-Below this threshold (~16.7M elements, i.e. 64MB in fp32 / 32MB in bf16), materializing the dense product is cheap
-enough and the original computation is kept for exact backwards compatibility.
-"""
+try:
+    from torch.amp import autocast
+except ImportError:  # pragma: no cover - older torch versions
+    autocast = None
 
 
-def use_factored_weight_norm(lora_A_weight: torch.Tensor, lora_B_weight: torch.Tensor) -> bool:
-    """Whether to compute the DoRA weight norm in factored form instead of materializing `lora_B @ lora_A`."""
-    dense_numel = lora_B_weight.shape[0] * lora_A_weight.shape[1]
-    return dense_numel >= FACTORED_NORM_MIN_NUMEL
+@contextmanager
+def _disable_autocast(device_type: str):
+    """Disable autocast for the scope if the backend supports it."""
+    if autocast is None:
+        yield
+        return
+
+    try:
+        ctx = autocast(device_type=device_type, enabled=False)
+    except (TypeError, RuntimeError, ValueError):
+        # Device type doesn't support autocast (e.g. cpu on older PyTorch).
+        yield
+        return
+
+    with ctx:
+        yield
 
 
 def factored_weight_norm(
@@ -71,11 +83,21 @@ def factored_weight_norm(
     """
     lora_A_weight = lora_A_weight.detach()
     lora_B_weight = lora_B_weight.detach()
-    # ⟨W_i, (BA)_i⟩ = Σ_k B[i,k]·⟨W_i, A_k⟩
-    inner = ((weight @ lora_A_weight.T) * lora_B_weight).sum(dim=1)
-    # ||(BA)_i||² = Σ_kl B[i,k]·B[i,l]·⟨A_k, A_l⟩
-    gram = lora_A_weight @ lora_A_weight.T
-    lora_sq = ((lora_B_weight @ gram) * lora_B_weight).sum(dim=1)
-    row_sq = weight.pow(2).sum(dim=1) + 2 * scaling * inner + scaling**2 * lora_sq
-    # clamp against small negative values caused by floating point cancellation
-    return row_sq.clamp_min(0).sqrt().to(weight.dtype)
+    dtype = weight.dtype
+    # The factored expansion is cancellation-prone, so accumulate the norm in fp32 for bf16/fp16 weights and
+    # disable autocast to prevent the backend from downcasting the matmuls (numerical-stability contract of the
+    # reference implementation).
+    compute_dtype = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+    with _disable_autocast(weight.device.type):
+        weight = weight.to(compute_dtype)
+        lora_A_weight = lora_A_weight.to(compute_dtype)
+        lora_B_weight = lora_B_weight.to(compute_dtype)
+        # ⟨W_i, (BA)_i⟩ = Σ_k B[i,k]·⟨W_i, A_k⟩
+        inner = ((weight @ lora_A_weight.T) * lora_B_weight).sum(dim=1)
+        # ||(BA)_i||² = Σ_kl B[i,k]·B[i,l]·⟨A_k, A_l⟩
+        gram = lora_A_weight @ lora_A_weight.T
+        lora_sq = ((lora_B_weight @ gram) * lora_B_weight).sum(dim=1)
+        row_sq = weight.pow(2).sum(dim=1) + 2 * scaling * inner + scaling**2 * lora_sq
+        # clamp against small negative values caused by floating point cancellation
+        weight_norm = row_sq.clamp_min(0).sqrt()
+    return weight_norm.to(dtype)

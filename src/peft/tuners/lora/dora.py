@@ -23,7 +23,7 @@ from torch import nn
 from peft.utils.integrations import dequantize_module_weight, gather_params_ctx
 from peft.utils.other import transpose
 
-from .factored_norm import factored_weight_norm, use_factored_weight_norm
+from .factored_norm import factored_weight_norm
 
 
 ENABLE_DORA_CACHING = False
@@ -97,8 +97,7 @@ class DoraLinearLayer(nn.Module):
         self, weight, lora_A, lora_B, scaling, adapter_name: Optional[str] = None
     ) -> torch.Tensor:
         # Same as get_weight_norm but computes the norm of `weight + scaling * lora_B @ lora_A` in factored form,
-        # i.e. without materializing the dense delta weight. Used for large layers, where the dense product would
-        # dominate transient memory usage.
+        # i.e. without materializing the dense delta weight.
         weight = transpose(weight, self.fan_in_fan_out)
         return factored_weight_norm(
             weight=weight,
@@ -154,17 +153,10 @@ class DoraLinearLayer(nn.Module):
         magnitude = self.weight
         weight = dequantize_module_weight(base_layer)
         weight = weight.to(x.dtype)
-        if use_factored_weight_norm(lora_A.weight, lora_B.weight):
-            # large layer: compute the weight norm in factored form, avoiding the dense lora_weight
-            weight_norm = self.get_weight_norm_factored(
-                weight=weight, lora_A=lora_A, lora_B=lora_B, scaling=scaling, adapter_name=adapter_name
-            )
-        else:
-            lora_weight = self.get_lora_weight(lora_A=lora_A, lora_B=lora_B, adapter_name=adapter_name)
-            lora_weight = lora_weight.to(x.dtype)
-            weight_norm = self.get_weight_norm(
-                weight=weight, lora_weight=lora_weight.detach(), scaling=scaling, adapter_name=adapter_name
-            )
+        # compute the weight norm in factored form, without materializing the dense lora_weight
+        weight_norm = self.get_weight_norm_factored(
+            weight=weight, lora_A=lora_A, lora_B=lora_B, scaling=scaling, adapter_name=adapter_name
+        )
         # see section 4.3 of DoRA (https://huggingface.co/papers/2402.09353)
         # "[...] we suggest treating ||V +∆V ||_c in
         # Eq. (5) as a constant, thereby detaching it from the gradient
