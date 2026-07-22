@@ -21,6 +21,9 @@ from torch import nn
 from transformers import AutoModelForCausalLM
 
 from peft import LoraConfig, TaskType, get_peft_model
+from peft.tuners.lora import factored_norm
+from peft.tuners.lora.dora import DoraLinearLayer
+from peft.tuners.lora.factored_norm import factored_weight_norm, use_factored_weight_norm
 from peft.tuners.lora.layer import Conv1d as LoraConv1d
 from peft.tuners.lora.layer import Conv2d as LoraConv2d
 from peft.tuners.lora.layer import Embedding as LoraEmbedding
@@ -259,6 +262,70 @@ class TestLoraVariants:
             resolved_instance = layer.resolve_lora_variant(config=config)
 
             assert isinstance(resolved_instance, expected_class)
+
+
+class TestFactoredDoraNorm:
+    """Tests for the factored DoRA weight norm, which avoids materializing the dense delta weight on large layers."""
+
+    def get_peft_model_with_dora(self):
+        torch.manual_seed(0)
+        base_model = nn.Sequential(nn.Linear(64, 32), nn.Linear(32, 16))
+        config = LoraConfig(target_modules=["0", "1"], use_dora=True, r=8, lora_alpha=16)
+        return get_peft_model(base_model, config)
+
+    def test_factored_weight_norm_matches_dense(self):
+        torch.manual_seed(0)
+        out_features, in_features, rank = 24, 32, 4
+        scaling = 2.0
+        weight = torch.randn(out_features, in_features)
+        lora_A = torch.randn(rank, in_features)
+        lora_B = torch.randn(out_features, rank)
+
+        dense_norm = torch.linalg.norm(weight + scaling * (lora_B @ lora_A), dim=1)
+        factored_norm = factored_weight_norm(
+            weight=weight, lora_A_weight=lora_A, lora_B_weight=lora_B, scaling=scaling
+        )
+        assert torch.allclose(factored_norm, dense_norm, atol=1e-5)
+
+    def test_factored_weight_norm_detaches_lora_weights(self):
+        # the dense path detaches the delta weight before computing the norm (DoRA paper, section 4.3); the factored
+        # path must do the same
+        weight = torch.randn(6, 8)
+        lora_A = torch.randn(4, 8, requires_grad=True)
+        lora_B = torch.randn(6, 4, requires_grad=True)
+
+        weight_norm = factored_weight_norm(weight=weight, lora_A_weight=lora_A, lora_B_weight=lora_B, scaling=1.0)
+        assert not weight_norm.requires_grad
+
+    def test_factored_path_only_used_above_threshold(self, monkeypatch):
+        lora_A = torch.randn(4, 8)
+        lora_B = torch.randn(6, 4)
+
+        assert not use_factored_weight_norm(lora_A, lora_B)
+        monkeypatch.setattr(factored_norm, "FACTORED_NORM_MIN_NUMEL", 0)
+        assert use_factored_weight_norm(lora_A, lora_B)
+
+    def test_dora_forward_factored_matches_dense(self, monkeypatch):
+        # force the factored weight-norm path on a small model and check that the DoRA output and the magnitude
+        # gradients match the dense path
+        peft_model = self.get_peft_model_with_dora()
+        dora_layers = [module for module in peft_model.modules() if isinstance(module, DoraLinearLayer)]
+        assert len(dora_layers) > 0
+
+        x = torch.randn(4, 64)
+        dense_out = peft_model(x)
+        dense_out.sum().backward()
+        dense_grads = [dora_layer.weight.grad.clone() for dora_layer in dora_layers]
+        peft_model.zero_grad()
+
+        monkeypatch.setattr(factored_norm, "FACTORED_NORM_MIN_NUMEL", 0)
+        factored_out = peft_model(x)
+        factored_out.sum().backward()
+        factored_grads = [dora_layer.weight.grad.clone() for dora_layer in dora_layers]
+
+        assert torch.allclose(factored_out, dense_out, atol=1e-5)
+        for factored_grad, dense_grad in zip(factored_grads, dense_grads):
+            assert torch.allclose(factored_grad, dense_grad, atol=1e-5)
 
 
 class TestActivatedLora:

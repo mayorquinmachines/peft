@@ -23,6 +23,8 @@ from torch import nn
 from peft.utils.integrations import dequantize_module_weight, gather_params_ctx
 from peft.utils.other import transpose
 
+from .factored_norm import factored_weight_norm, use_factored_weight_norm
+
 
 ENABLE_DORA_CACHING = False
 """Whether to enable DoRA caching, which makes it faster at inference but requires more memory"""
@@ -90,6 +92,21 @@ class DoraLinearLayer(nn.Module):
         weight_norm = torch.linalg.norm(weight, dim=1).to(weight.dtype)
         return weight_norm
 
+    @cache_decorator("weight-norm")
+    def get_weight_norm_factored(
+        self, weight, lora_A, lora_B, scaling, adapter_name: Optional[str] = None
+    ) -> torch.Tensor:
+        # Same as get_weight_norm but computes the norm of `weight + scaling * lora_B @ lora_A` in factored form,
+        # i.e. without materializing the dense delta weight. Used for large layers, where the dense product would
+        # dominate transient memory usage.
+        weight = transpose(weight, self.fan_in_fan_out)
+        return factored_weight_norm(
+            weight=weight,
+            lora_A_weight=lora_A.weight.to(weight.dtype),
+            lora_B_weight=lora_B.weight.to(weight.dtype),
+            scaling=scaling,
+        )
+
     @cache_decorator("lora-weight")
     def get_lora_weight(self, lora_A, lora_B, adapter_name: Optional[str] = None):
         # Don't use `lora_weight = lora_B.weight @ lora_A.weight` because this causes errors with FSDP. Instead,
@@ -134,15 +151,20 @@ class DoraLinearLayer(nn.Module):
         For DoRA, calculate the extra output from LoRA with DoRA applied. This should be added on top of the base layer
         output.
         """
-        lora_weight = self.get_lora_weight(lora_A=lora_A, lora_B=lora_B, adapter_name=adapter_name)
-        lora_weight = lora_weight.to(x.dtype)
-
         magnitude = self.weight
         weight = dequantize_module_weight(base_layer)
         weight = weight.to(x.dtype)
-        weight_norm = self.get_weight_norm(
-            weight=weight, lora_weight=lora_weight.detach(), scaling=scaling, adapter_name=adapter_name
-        )
+        if use_factored_weight_norm(lora_A.weight, lora_B.weight):
+            # large layer: compute the weight norm in factored form, avoiding the dense lora_weight
+            weight_norm = self.get_weight_norm_factored(
+                weight=weight, lora_A=lora_A, lora_B=lora_B, scaling=scaling, adapter_name=adapter_name
+            )
+        else:
+            lora_weight = self.get_lora_weight(lora_A=lora_A, lora_B=lora_B, adapter_name=adapter_name)
+            lora_weight = lora_weight.to(x.dtype)
+            weight_norm = self.get_weight_norm(
+                weight=weight, lora_weight=lora_weight.detach(), scaling=scaling, adapter_name=adapter_name
+            )
         # see section 4.3 of DoRA (https://huggingface.co/papers/2402.09353)
         # "[...] we suggest treating ||V +∆V ||_c in
         # Eq. (5) as a constant, thereby detaching it from the gradient
