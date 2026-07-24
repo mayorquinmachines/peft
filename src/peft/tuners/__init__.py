@@ -47,7 +47,9 @@ from .lora import (
     convert_to_lora,
     create_arrow_model,
     get_eva_state_dict,
+    get_osrm_state_dict,
     initialize_lora_eva_weights,
+    initialize_lora_osrm_weights,
     preprocess_loraga,
     save_as_lora,
 )
@@ -177,7 +179,9 @@ __all__ = [
     "convert_to_lora",
     "create_arrow_model",
     "get_eva_state_dict",
+    "get_osrm_state_dict",
     "initialize_lora_eva_weights",
+    "initialize_lora_osrm_weights",
     "preprocess_loraga",
     "save_as_lora",
 ]

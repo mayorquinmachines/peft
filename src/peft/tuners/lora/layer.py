@@ -296,7 +296,7 @@ class LoraLayer(BaseTunerLayer):
         elif init_lora_weights == "loftq":
             with gather_params_ctx(self.get_base_layer().weight):
                 self.loftq_init(adapter_name, config)
-        elif init_lora_weights == "eva":
+        elif init_lora_weights in ("eva", "osrm"):
             nn.init.zeros_(self.lora_B[adapter_name].weight)
         elif init_lora_weights == "orthogonal":
             with gather_params_ctx(self.get_base_layer().weight):
@@ -2371,7 +2371,7 @@ class ParamWrapper(nn.Module, LoraLayer):
         elif init_lora_weights == "loftq":
             with gather_params_ctx(self.get_base_layer().weight):
                 self.loftq_init(adapter_name)
-        elif init_lora_weights == "eva":
+        elif init_lora_weights in ("eva", "osrm"):
             nn.init.zeros_(self.lora_B[adapter_name].weight)
         elif init_lora_weights == "orthogonal":
             with gather_params_ctx(self.get_base_layer().weight):

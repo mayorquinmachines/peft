@@ -33,6 +33,7 @@ from .gptq import GPTQLoraLinear
 from .layer import Conv2d, Conv3d, Embedding, Linear, LoraLayer, ParamWrapper
 from .loraga import preprocess_loraga
 from .model import LoraModel
+from .osrm import get_osrm_state_dict, initialize_lora_osrm_weights
 
 
 __all__ = [
@@ -56,7 +57,9 @@ __all__ = [
     "convert_to_lora",
     "create_arrow_model",
     "get_eva_state_dict",
+    "get_osrm_state_dict",
     "initialize_lora_eva_weights",
+    "initialize_lora_osrm_weights",
     "preprocess_loraga",
     "save_as_lora",
 ]

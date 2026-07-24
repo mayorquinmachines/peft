@@ -407,7 +407,7 @@ class LoraConfig(PeftConfig):
             use the original default value of `lora_alpha/r`.
         modules_to_save (`List[str]`):
             List of modules apart from adapter layers to be set as trainable and saved in the final checkpoint.
-        init_lora_weights (`bool` | `Literal["gaussian", "eva", "olora", "pissa", "pissa_niter_[number of iters]", "corda", "loftq", "orthogonal", "mica"]`):
+        init_lora_weights (`bool` | `Literal["gaussian", "eva", "osrm", "olora", "pissa", "pissa_niter_[number of iters]", "corda", "loftq", "orthogonal", "mica"]`):
             How to initialize the weights of the adapter layers. Passing True (default) results in the default
             initialization from the reference implementation from Microsoft, with the LoRA B weight being set to 0.
             This means that without further training, the LoRA adapter will be a no-op. Setting the initialization to
@@ -416,7 +416,11 @@ class LoraConfig(PeftConfig):
             scaled by the LoRA rank for linear and layers. Pass `'loftq'` to use LoftQ initialization. Passing `'eva'`
             results in a data-driven initialization of <a href='https://huggingface.co/papers/2410.07170' >Explained
             Variance Adaptation</a>. EVA initializes LoRA based on the SVD of layer input activations and achieves SOTA
-            performance due to its ability to adapt to the finetuning data. Pass `'olora'` to use OLoRA initialization.
+            performance due to its ability to adapt to the finetuning data. Passing `'osrm'` results in a data-driven
+            initialization of <a href='https://huggingface.co/papers/2505.22934' >Orthogonal Subspaces for Robust Model
+            Merging</a>. OSRM initializes LoRA A into the low-interference subspace of out-of-task layer input
+            activations (the eigenvectors of their covariance with the smallest eigenvalues), which reduces cross-task
+            interference when multiple LoRA adapters are merged. Pass `'olora'` to use OLoRA initialization.
             Passing `'pissa'` results in the initialization of <a href='https://huggingface.co/papers/2404.02948'
             >Principal Singular values and Singular vectors Adaptation (PiSSA)</a>, which converges more rapidly than
             LoRA and ultimately achieves superior performance. Moreover, PiSSA reduces the quantization error compared
@@ -598,6 +602,7 @@ class LoraConfig(PeftConfig):
         | Literal[
             "gaussian",
             "eva",
+            "osrm",
             "olora",
             "pissa",
             "pissa_niter_[number of iters]",
@@ -618,6 +623,9 @@ class LoraConfig(PeftConfig):
                 "is not a no-op before training; this setting is intended for debugging purposes. "
                 "Passing `'gaussian'` results in Gaussian initialization scaled by the LoRA rank for linear and layers. "
                 "Passing `'eva'` results in a data-driven initialization of Explained Variance Adaptation. "
+                "Passing `'osrm'` results in a data-driven initialization of Orthogonal Subspaces for Robust Model "
+                "Merging, where LoRA A is initialized into the low-interference subspace of out-of-task layer input "
+                "activations to reduce cross-task interference when merging adapters. "
                 "Passing `'olora'` results in OLoRA initialization. "
                 "Passing `'pissa'` results in PiSSA initialization. "
                 "Passing `'pissa_niter_[number of iters]'` initiates Fast-SVD-based PiSSA initialization, where "

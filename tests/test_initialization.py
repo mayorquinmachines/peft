@@ -27,6 +27,7 @@ from huggingface_hub import snapshot_download
 from safetensors.torch import load_file
 from scipy import stats
 from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
 from transformers import AutoModelForCausalLM
 
 from peft import (
@@ -60,7 +61,9 @@ from peft import (
     VeloraConfig,
     VeraConfig,
     WaveFTConfig,
+    get_osrm_state_dict,
     get_peft_model,
+    initialize_lora_osrm_weights,
     inject_adapter_in_model,
     set_peft_model_state_dict,
 )
@@ -3816,6 +3819,149 @@ class TestEvaInitialization:
             UserWarning, match="`eva_config` specified but will be ignored when `init_lora_weights` is not 'eva'."
         ):
             LoraConfig(init_lora_weights=True, eva_config=EvaConfig())
+
+
+class TestOsrmInitialization:
+    """Tests for the OSRM (Orthogonal Subspaces for Robust Model Merging) initialization method.
+
+    Unlike EVA, OSRM does not require a convergence loop, so these tests run the full initialization end-to-end on a
+    small MLP.
+    """
+
+    torch_device = infer_device()
+
+    def get_model(self):
+        class MLP(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.lin0 = nn.Linear(16, 32, bias=False)
+                self.lin1 = nn.Linear(32, 16, bias=False)
+
+            def forward(self, x):
+                return self.lin1(self.lin0(x))
+
+        return MLP().to(self.torch_device).eval()
+
+    def get_dataloader(self, n_batches=4, batch_size=64, n_features=16, seed=0):
+        # data with distinct eigenvalues so that the low-interference subspace is well defined
+        generator = torch.Generator().manual_seed(seed)
+        basis = torch.linalg.qr(torch.randn(n_features, n_features, generator=generator)).Q
+        scales = torch.linspace(2.0, 0.1, n_features)
+        batches = [
+            (torch.randn(batch_size, n_features, generator=generator) * scales) @ basis.T for _ in range(n_batches)
+        ]
+        return DataLoader(TensorDataset(torch.cat(batches)), batch_size=batch_size)
+
+    def get_peft_model(self, model, r=4):
+        config = LoraConfig(target_modules=["lin0"], r=r, init_lora_weights="osrm")
+        return get_peft_model(model, config)
+
+    def get_lora_A(self, peft_model):
+        return peft_model.base_model.model.lin0.lora_A["default"].weight
+
+    def get_covariance(self, dataloader):
+        # the uncentered covariance accumulated by OSRM's covariance hook
+        covariance = None
+        for (x,) in dataloader:
+            x = x.to(self.torch_device, torch.float32)
+            covariance = x.T @ x if covariance is None else covariance + x.T @ x
+        return covariance
+
+    def initialize_osrm(self, peft_model, dataloader):
+        initialize_lora_osrm_weights(
+            peft_model,
+            dataloader,
+            forward_fn=lambda model, inputs: model(inputs[0]),
+            prepare_model_inputs_fn=None,
+            prepare_layer_inputs_fn=None,
+            show_progress_bar=False,
+        )
+
+    def test_osrm_end_to_end(self):
+        model = self.get_model()
+        probe = torch.randn(2, 16, device=self.torch_device)
+        with torch.no_grad():
+            output_base = model(probe)
+
+        peft_model = self.get_peft_model(model, r=4)
+        # lora_B is zero-initialized, so the adapter is a no-op before and after OSRM initialization
+        with torch.no_grad():
+            assert torch.allclose(peft_model(probe), output_base)
+
+        dataloader = self.get_dataloader()
+        self.initialize_osrm(peft_model, dataloader)
+
+        lora_A = self.get_lora_A(peft_model)
+        # A has orthonormal rows, as required by the OSRM solution (Eq. 3 in the paper)
+        torch.testing.assert_close(lora_A @ lora_A.T, torch.eye(4, device=self.torch_device), rtol=1e-4, atol=1e-5)
+
+        # A spans the subspace where the out-of-task data has the least variance
+        covariance = self.get_covariance(dataloader)
+        eigenvalues = torch.linalg.eigh(covariance).eigenvalues  # ascending order
+        torch.testing.assert_close(
+            torch.trace(lora_A @ covariance @ lora_A.T), eigenvalues[:4].sum(), rtol=1e-4, atol=1e-3
+        )
+
+        with torch.no_grad():
+            assert torch.allclose(peft_model(probe), output_base)
+
+    def test_osrm_with_precomputed_state_dict(self):
+        dataloader = self.get_dataloader()
+        peft_model = self.get_peft_model(self.get_model())
+        osrm_state_dict = get_osrm_state_dict(
+            peft_model,
+            dataloader,
+            forward_fn=lambda model, inputs: model(inputs[0]),
+            prepare_model_inputs_fn=None,
+            prepare_layer_inputs_fn=None,
+            show_progress_bar=False,
+        )
+
+        other_peft_model = self.get_peft_model(self.get_model())
+        initialize_lora_osrm_weights(other_peft_model, osrm_state_dict=osrm_state_dict)
+        torch.testing.assert_close(self.get_lora_A(other_peft_model), osrm_state_dict["base_model.model.lin0"])
+
+        # loading the precomputed state dict gives the same result as initializing from the dataloader directly
+        self.initialize_osrm(peft_model, dataloader)
+        torch.testing.assert_close(self.get_lora_A(peft_model), self.get_lora_A(other_peft_model))
+
+    def test_osrm_raises_with_wrong_init_lora_weights(self):
+        model = self.get_model()
+        config = LoraConfig(target_modules=["lin0"], r=4, init_lora_weights=True)
+        peft_model = get_peft_model(model, config)
+        msg = "`initialize_lora_osrm_weights` can only be used with `init_lora_weights='osrm'`"
+        with pytest.raises(ValueError, match=msg):
+            self.initialize_osrm(peft_model, self.get_dataloader())
+
+    def test_osrm_raises_without_dataloader_and_state_dict(self):
+        peft_model = self.get_peft_model(self.get_model())
+        with pytest.raises(ValueError, match="dataloader is required if osrm_state_dict is not provided"):
+            initialize_lora_osrm_weights(peft_model)
+
+    def test_osrm_raises_with_empty_dataloader(self):
+        peft_model = self.get_peft_model(self.get_model())
+        dataloader = DataLoader(TensorDataset(torch.empty(0, 16)), batch_size=64)
+        with pytest.raises(ValueError, match="dataloader is empty"):
+            self.initialize_osrm(peft_model, dataloader)
+
+    def test_osrm_raises_with_multiple_active_adapters(self):
+        peft_model = self.get_peft_model(self.get_model())
+        peft_model.add_adapter("other", LoraConfig(target_modules=["lin0"], r=4, init_lora_weights="osrm"))
+        # on the PeftModel, multiple active adapters have to be activated through base_model
+        peft_model.base_model.set_adapter(["default", "other"])
+        msg = "`initialize_lora_osrm_weights` currently only works with a single active adapter"
+        with pytest.raises(ValueError, match=msg):
+            self.initialize_osrm(peft_model, self.get_dataloader())
+
+    def test_osrm_save_and_load(self, tmp_path):
+        peft_model = self.get_peft_model(self.get_model())
+        self.initialize_osrm(peft_model, self.get_dataloader())
+        lora_A = self.get_lora_A(peft_model).clone()
+        peft_model.save_pretrained(tmp_path)
+
+        del peft_model
+        peft_model = PeftModel.from_pretrained(self.get_model(), tmp_path)
+        torch.testing.assert_close(self.get_lora_A(peft_model), lora_A)
 
 
 class TestLilyInitialization:

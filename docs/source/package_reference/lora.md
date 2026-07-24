@@ -193,6 +193,23 @@ EVA works out of the box with bitsandbytes. Simply initialize the model with `qu
 > For further instructions on using EVA, please refer to our [documentation](https://github.com/huggingface/peft/tree/main/examples/eva_finetuning).
 </hfoption>
 
+<hfoption id="OSRM">
+[OSRM](https://huggingface.co/papers/2505.22934) (Orthogonal Subspaces for Robust Model Merging) is a data-driven initialization scheme designed for merging multiple task-specific LoRA adapters. OSRM accumulates the covariance of out-of-task input activations at each layer (i.e. activations from tasks other than the one the adapter will be fine-tuned on) and initializes LoRA's A matrix with the eigenvectors associated with the smallest eigenvalues. This places the adapter in a subspace where out-of-task data has minimal variance, reducing cross-task interference when adapters are merged, while LoRA's B matrix remains zero-initialized so the adapter is a no-op before training. OSRM is complementary to merging algorithms and can be combined with most of them.
+
+You can use OSRM by setting `init_lora_weights="osrm"` in [`LoraConfig`]:
+```python
+from peft import LoraConfig
+peft_config = LoraConfig(
+    init_lora_weights = "osrm",
+    ...
+)
+```
+Then, call [`initialize_lora_osrm_weights`] with a dataloader of out-of-task data to initialize the OSRM weights:
+```python
+initialize_lora_osrm_weights(peft_model, dataloader)
+```
+</hfoption>
+
 <hfoption id="LoftQ">
 When quantizing the base model for QLoRA training, consider using the [LoftQ initialization](https://huggingface.co/papers/2310.08659), which has been shown to improve performance when training quantized models. The idea is that the LoRA weights are initialized such that the quantization error is minimized. To use LoftQ, follow [these instructions](https://github.com/huggingface/peft/tree/main/examples/loftq_finetuning).
 
@@ -1077,6 +1094,17 @@ To encode general knowledge, GenKnowSub subtracts the average of the provided ge
 #### get_eva_state_dict
 
 [[autodoc]] tuners.lora.eva.get_eva_state_dict
+
+
+### Osrm
+
+#### initialize_lora_osrm_weights
+
+[[autodoc]] tuners.lora.osrm.initialize_lora_osrm_weights
+
+#### get_osrm_state_dict
+
+[[autodoc]] tuners.lora.osrm.get_osrm_state_dict
 
 
 ### LoraGAConfig
