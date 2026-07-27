@@ -30,6 +30,8 @@ from functools import partial
 from typing import Any, Literal, Optional
 
 import torch
+from bilevel_optimization import BilevelPhase, BilevelUpdateScheduler, infinite_batches
+from data import get_train_valid_test_datasets, get_wiki_small
 from torch import nn
 from torch.amp import GradScaler, autocast
 from tqdm import tqdm
@@ -54,7 +56,6 @@ from utils import (
     validate_experiment_path,
 )
 
-from data import get_train_valid_test_datasets, get_wiki_small
 from peft import AdaLoraConfig, AdamssConfig, PeftConfig, initialize_kv_prefix_from_text
 from peft.utils import CONFIG_NAME, infer_device
 
@@ -244,10 +245,27 @@ def train(
         bucket_factor=BUCKET_FACTOR,
         delete_cols=["response"],
     )
+    # BiDoRA-style bi-level optimization: alternate between direction steps on training batches (lower level) and
+    # magnitude steps on validation batches (upper level), see bilevel_optimization.py.
+    bilevel_scheduler = None
+    bilevel_valid_batches = None
+    if optimizer_type == "bidora":
+        bilevel_scheduler = BilevelUpdateScheduler(model)
+        bilevel_valid_batches = infinite_batches(
+            lambda: BucketIterator(
+                ds_valid, batch_size=batch_size, bucket_factor=BUCKET_FACTOR, delete_cols=["response"]
+            )
+        )
     try:
         pbar = tqdm(range(1, max_steps + 1))
         for step, batch in zip(pbar, iterator_train):
             tic = time.perf_counter()
+
+            if bilevel_scheduler is not None:
+                phase = bilevel_scheduler.set_phase_for_step(step)
+                if phase is BilevelPhase.MAGNITUDE:
+                    # upper-level step: optimize the DoRA magnitude vectors on validation data
+                    batch = next(bilevel_valid_batches)
 
             # create the batch
             tokens_per_sample = [len(i) for i in batch["input_ids"]]

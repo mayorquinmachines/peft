@@ -246,3 +246,13 @@ Python 3.12+ is required.
 - AMP does not appear to help, investigate
 - packing of sequences (but this probably requires adjusting the attention matrix)
 - clean up what gets printed and where (stdout, stderr)
+
+## Bi-level DoRA optimization (BiDoRA-style)
+
+Setting `"optimizer_type": "bidora"` in `training_params.json` enables bi-level optimization for DoRA adapters
+(`"use_dora": true"` in the adapter config), adapted from
+[BiDoRA](https://arxiv.org/abs/2410.09758). Instead of optimizing the DoRA magnitude vectors and the LoRA direction
+weights simultaneously, training alternates between the two components: direction steps run on training batches
+(lower level) while every 2nd step is a magnitude step that runs on a validation batch (upper level). See
+`bilevel_optimization.py` for the implementation and `experiments/lora/llama-3.2-3B-rank32-bidora/` for an example
+experiment that mirrors the `llama-3.2-3B-rank32-dora` baseline.

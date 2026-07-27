@@ -84,7 +84,7 @@ class TrainConfig:
         query_template: The template for the query
         seed: The random seed
         grad_norm_clip: The gradient norm clipping value (set to 0 to skip)
-        optimizer_type: The name of a torch optimizer (e.g. AdamW) or a PEFT method ("lora+", "lora-fa")
+        optimizer_type: The name of a torch optimizer (e.g. AdamW) or a PEFT method ("lora+", "lora-fa", "bidora")
         optimizer_kwargs: The optimizer keyword arguments (lr etc.)
         lr_scheduler: The learning rate scheduler (currently only None or 'cosine' are supported)
         use_amp: Whether to use automatic mixed precision
@@ -133,7 +133,7 @@ class TrainConfig:
             raise ValueError(f"Invalid eval_steps: {self.eval_steps} > max_steps: {self.max_steps}")
         if self.grad_norm_clip < 0:
             raise ValueError(f"Invalid grad_norm_clip: {self.grad_norm_clip}")
-        if self.optimizer_type not in ["lora+", "lora-fa"] and not hasattr(torch.optim, self.optimizer_type):
+        if self.optimizer_type not in ["lora+", "lora-fa", "bidora"] and not hasattr(torch.optim, self.optimizer_type):
             raise ValueError(f"Invalid optimizer_type: {self.optimizer_type}")
         if self.lr_scheduler not in [None, "cosine"]:
             raise ValueError(f"Invalid lr_scheduler: {self.lr_scheduler}, must be None or 'cosine'")
@@ -281,6 +281,10 @@ def get_optimizer_and_scheduler(
         optimizer = create_loraplus_optimizer(model, optimizer_cls=torch.optim.AdamW, **optimizer_kwargs)
     elif optimizer_type == "lora-fa":
         optimizer = create_lorafa_optimizer(model, **optimizer_kwargs)
+    elif optimizer_type == "bidora":
+        # BiDoRA-style bi-level optimization uses a normal optimizer; the alternating updates of the magnitude and
+        # direction components are handled in the training loop (see bilevel_optimization.py).
+        optimizer = torch.optim.AdamW(model.parameters(), **optimizer_kwargs)
     else:
         cls = getattr(torch.optim, optimizer_type)
         optimizer = cls(model.parameters(), **optimizer_kwargs)
