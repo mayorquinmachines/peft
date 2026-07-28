@@ -390,6 +390,13 @@ class LoraConfig(PeftConfig):
             The names of the modules to not apply the adapter. When passing a string, a regex match will be performed.
             When passing a list of strings, either an exact match will be performed or it is checked if the name of the
             module ends with any of the passed strings.
+        condition_number_top_fraction (`Optional[float]`):
+            If set to a fraction in the interval (0, 1], only the targeted weight matrices with the largest condition
+            numbers (the ratio of the largest to the smallest singular value) are adapted. This follows the κ-LoRA
+            targeting rule (https://arxiv.org/abs/2607.22489): matrices with large condition numbers contain
+            underdeveloped directions that benefit most from low-rank adaptation, so restricting LoRA to the top
+            fraction of matrices (e.g. 0.5) reduces the trainable parameter count while matching the accuracy of
+            standard LoRA. Defaults to `None`, which adapts all targeted modules.
         lora_alpha (`int`):
             The alpha parameter for Lora scaling.
         lora_dropout (`float`):
@@ -564,6 +571,15 @@ class LoraConfig(PeftConfig):
     exclude_modules: Optional[Union[list[str], str]] = field(
         default=None,
         metadata={"help": "List of module names or regex expression of the module names to exclude from Lora."},
+    )
+    condition_number_top_fraction: Optional[float] = field(
+        default=None,
+        metadata={
+            "help": (
+                "If set to a fraction in (0, 1], restrict LoRA to the targeted weight matrices with the largest "
+                "condition numbers (κ-LoRA-style spectral targeting)."
+            )
+        },
     )
     lora_alpha: int = field(default=8, metadata={"help": "Lora alpha"})
     lora_dropout: float = field(default=0.0, metadata={"help": "Lora dropout"})
@@ -944,6 +960,9 @@ class LoraConfig(PeftConfig):
         # check for layers_to_transform and layers_pattern
         if self.layers_pattern and not self.layers_to_transform:
             raise ValueError("When `layers_pattern` is specified, `layers_to_transform` must also be specified. ")
+
+        if self.condition_number_top_fraction is not None and not (0.0 < self.condition_number_top_fraction <= 1.0):
+            raise ValueError("`condition_number_top_fraction` must be in the interval (0, 1].")
 
         if self.use_dora and self.megatron_config:
             raise ValueError("DoRA does not support megatron_core, please set `use_dora=False`.")
