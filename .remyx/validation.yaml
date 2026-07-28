@@ -1,0 +1,16 @@
+benchmarks:
+  - suite: "evaluation/test_factored_dora_efficiency.py"
+    scorer: factored_dora_memory_reduction
+    baseline: main
+    metrics:
+      - {name: factored_dora_memory_reduction, direction: ">", role: target}
+      - {name: regression_safety, direction: ">", threshold: 0.0, role: guardrail}  # Adjust threshold to be a real bound
+    policy: {guardrail_veto: true}
+    variants: {feature: {env: {DORA_FACTORED_NORM: "1"}}}
+    held_constant: ["model architecture", "batch size", "dtype"]
+    avoid: ["network", "GPU going OOM"]
+    provenance: 
+      factored_dora_memory_reduction: "repo_runner:tests/test_lora_variants.py" 
+      suite: "synthesized"
+      regression_safety: "synthesized"
+      held_constant: "protocol_doc:method_comparison/README.md"
