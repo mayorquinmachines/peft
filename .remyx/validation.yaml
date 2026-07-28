@@ -1,0 +1,31 @@
+benchmarks:
+  - suite: "evaluation/test_dora_factored_norm.py"
+    scorer: memory_efficiency_dora
+    baseline: main
+    metrics:
+      - key: memory_efficiency_dora
+        direction: higher_is_better
+        threshold: >= 1.0
+        role: primary
+      - key: same_output_accuracy
+        direction: higher_is_better
+        threshold: >= 0.99
+        role: guardrail
+    policy:
+      guardrail_veto: true
+    variants:
+      feature:
+        env:
+          USE_FACTORED_NORM: "1"
+held_constant:
+  - same_lora_rank
+  - same_lora_alpha
+  - same_base_model
+avoid:
+  - no_network
+  - no_real_gpu_alloc
+provenance:
+  memory_efficiency_dora: "inferred"
+  same_output_accuracy: "inferred"
+  suite: "synthesized"
+  held_constant: "inferred"
