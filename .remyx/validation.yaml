@@ -1,0 +1,30 @@
+benchmarks:
+  - suite: "eval/eval_memory_savings.py"
+    scorer: parameter_size_mb
+    baseline: main
+    metrics:
+      parameter_size_mb:
+        direction: "<"
+        threshold: 1.0  # Adjust according to realistic baseline model benchmark in MB
+        role: target
+      consistency:
+        direction: ">="
+        threshold: 0.99
+        role: guardrail
+    policy:
+      guardrail_veto: true
+    variants:
+      feature:
+        env:
+          ENABLE_FACTORED_NORM: "true"
+    held_constant:
+      - base_model: "same"
+      - calibration_data: "identical"
+    avoid:
+      - "external network"
+      - "timing on shared CPU"
+    provenance:
+      parameter_size_mb: "maintainer_comment:@mayorquinmachines"
+      consistency: "inferred"
+      held_constant: "protocol_doc:method_comparison/MetaMathQA/README.md"
+      suite: "synthesized"
