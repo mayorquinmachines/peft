@@ -1,0 +1,39 @@
+benchmarks:
+  - suite: "eval/eval_memory_savings.py"
+    scorer: memory_savings_MB
+    baseline: main
+    metrics:
+      - key: memory_savings_MB
+        direction: ">"
+        threshold: 0.3
+        role: target
+      - key: correct_functionality
+        direction: ">="
+        threshold: 1
+        role: guardrail
+    policy:
+      guardrail_veto: true
+    provenance:
+      memory_savings_MB: "user_guidance"
+      correct_functionality: "user_guidance"
+      suite: "synthesized"
+      scorer: "synthesized"
+      held_constant: "inferred"
+      avoid: "inferred"
+held_constant:
+  - same_base_model
+  - same_params
+  - same_seed
+avoid:
+  - no_network
+  - no_wall_clock_time
+provenance:
+  memory_savings_MB: "user_guidance"
+  correct_functionality: "user_guidance"
+  suite: "synthesized"
+  held_constant: "inferred"
+  avoid: "inferred"
+
+variants:
+  feature:
+    env: DORA_FEATURE_ENABLED
