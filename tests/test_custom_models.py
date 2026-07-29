@@ -76,6 +76,7 @@ from peft.tuners.lora.config import BdLoraConfig
 from peft.tuners.lora.monteclora import MontecloraSampler
 from peft.tuners.tuners_utils import BaseTunerLayer
 from peft.utils import AuxiliaryTrainingWrapper, infer_device
+from peft.utils.orthogonal_merge import orthogonal_subspace_merge
 
 from .testing_common import PeftCommonTester, _skip_if_merging_not_supported
 from .testing_utils import get_state_dict, require_non_cpu, set_init_weights_false
@@ -4034,6 +4035,73 @@ class TestPeftCustomModel(PeftCommonTester):
         dummy_input = torch.randn(2, 10)
         output = model(dummy_input)
         assert output is not None
+
+    def test_add_weighted_adapter_orthogonal_svd(self):
+        # Test that the orthogonal_svd combination type (adapted from https://arxiv.org/abs/2505.22934) merges
+        # adapters end-to-end: it projects each adapter's delta weight onto the orthogonal complement of the
+        # other adapters' subspaces before merging.
+        torch.manual_seed(42)
+        model = MLP()
+        config = LoraConfig(target_modules=["lin0"], r=8, init_lora_weights=False)
+        model = get_peft_model(model, config, adapter_name="adapter1")
+        model.add_adapter("adapter2", config)
+
+        model.add_weighted_adapter(
+            adapters=["adapter1", "adapter2"],
+            weights=[0.7, 0.3],
+            adapter_name="merged_orthogonal",
+            combination_type="orthogonal_svd",
+        )
+
+        # the rank of the merged adapter defaults to the max rank of the merged adapters
+        assert model.peft_config["merged_orthogonal"].r == 8
+
+        for module in model.modules():
+            if isinstance(module, lora.LoraLayer):
+                dw_merged = module.get_delta_weight("merged_orthogonal")
+                dw_adapter1 = module.get_delta_weight("adapter1")
+                assert dw_merged.shape == dw_adapter1.shape
+                assert torch.isfinite(dw_merged).all()
+
+        # Verify the merged adapter can run forward pass
+        model.set_adapter("merged_orthogonal")
+        dummy_input = torch.randn(2, 10)
+        output = model(dummy_input)
+        assert output is not None
+
+    def test_orthogonal_subspace_merge_removes_shared_subspace(self):
+        # Test the core mechanism of orthogonal_subspace_merge: when two task tensors share an input direction,
+        # the merged tensor has no component along that shared direction (cross-task interference is removed),
+        # while task-private directions are preserved.
+        d_out, d_in = 8, 8
+        shared_direction = torch.zeros(d_in)
+        shared_direction[0] = 1.0
+        private_direction_1 = torch.zeros(d_in)
+        private_direction_1[1] = 1.0
+        private_direction_2 = torch.zeros(d_in)
+        private_direction_2[2] = 1.0
+
+        torch.manual_seed(42)
+        # task 1 acts on the shared direction and private direction 1
+        a1 = torch.stack([shared_direction, private_direction_1])
+        b1 = torch.randn(d_out, 2)
+        # task 2 acts on the shared direction and private direction 2
+        a2 = torch.stack([shared_direction, private_direction_2])
+        b2 = torch.randn(d_out, 2)
+        task_tensors = [b1 @ a1, b2 @ a2]
+        weights = torch.tensor([1.0, 1.0])
+
+        merged = orthogonal_subspace_merge(task_tensors, weights)
+        assert merged.shape == (d_out, d_in)
+
+        # the component along the shared input direction is removed
+        assert torch.allclose(merged @ shared_direction, torch.zeros(d_out), atol=1e-5)
+        # a plain weighted sum would keep a large component along the shared direction
+        plain_merged = task_tensors[0] + task_tensors[1]
+        assert (plain_merged @ shared_direction).norm() > 0.1
+        # task-private directions are preserved
+        assert (merged @ private_direction_1).norm() > 0.1
+        assert (merged @ private_direction_2).norm() > 0.1
 
     def test_multiple_adapters_no_needless_copy_modules_to_save(self):
         # See 2206
