@@ -11,11 +11,11 @@ benchmarks:
     baseline: main
     metrics:
       - key: spectral_lora_trainable_params
-        direction: smaller-is-better
+        direction: "<="
         threshold: 1100
         role: target
       - key: spectral_lora_fit_mse
-        direction: smaller-is-better
+        direction: "<="
         threshold: 1.25
         role: guardrail
     policy:
