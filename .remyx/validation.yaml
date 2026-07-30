@@ -1,0 +1,25 @@
+benchmarks:
+  - suite: "evaluation/eval_spectral_targeting.py"
+    scorer: spectral_lora_trainable_params
+    baseline: main
+    metrics:
+      - key: spectral_lora_trainable_params
+        direction: smaller-is-better
+        threshold: 0.5  # Expect trainable parameters to essentially halve
+        role: target
+      - key: spectral_lora_fit_mse
+        direction: smaller-is-better
+        threshold: 1.0  # Ensure fit MSE does not regress by a multiplicative factor over baseline
+        role: guardrail
+    policy:
+      guardrail_veto: true
+    variants:
+      feature:
+        env:
+          LORA_CONDITION_NUMBER_TOP_FRACTION: "0.5"
+    provenance:
+      spectral_lora_trainable_params: "user_guidance"
+      spectral_lora_fit_mse: "user_guidance"
+      suite: "synthesized"
+      held_constant: "protocol_doc:method_comparison/README.md"
+      avoid: "protocol_doc:method_comparison/README.md"
