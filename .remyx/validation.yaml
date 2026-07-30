@@ -1,0 +1,20 @@
+benchmarks:
+  - suite: "eval/eval_memory_savings.py"
+    scorer: memory_savings_bytes
+    baseline: main
+    metrics:
+      - {key: memory_savings_bytes, threshold: 1024, direction: ">", role: "target"}
+      - {key: dora_correctness, threshold: 1, direction: ">=", role: "guardrail"}
+    policy: {guardrail_veto: true}
+    variants: {feature: {env: {ENABLE_DORA_CACHING: "1"}}}
+    held_constant:
+      - same base model architecture
+      - same random seed for initialization
+    avoid:
+      - no network calls
+      - no GPU usage
+    provenance:
+      suite: "synthesized"
+      memory_savings_bytes: "user_guidance"
+      dora_correctness: "maintainer_comment:@mayorquinmachines"
+      held_constant: "method_comparison/MetaMathQA/README.md"
