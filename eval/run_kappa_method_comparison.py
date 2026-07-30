@@ -30,6 +30,13 @@ def main() -> int:
     subprocess.run(
         [sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"],
         cwd=harness_dir, check=True)
+    # The eval pool's GPU driver speaks CUDA 12.8; a default-resolved torch wheel
+    # can target a newer CUDA and refuse to initialize. Pin the cu126 build,
+    # AFTER the requirements install so nothing re-resolves it away.
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "-q", "torch==2.7.1",
+         "--index-url", "https://download.pytorch.org/whl/cu126"],
+        cwd=harness_dir, check=True)
 
     before = _result_files(harness_dir)
     proc = subprocess.run([sys.executable, "run.py", "-v", EXPERIMENT], cwd=harness_dir)
