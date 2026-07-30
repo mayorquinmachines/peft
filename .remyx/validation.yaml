@@ -1,0 +1,32 @@
+benchmarks:
+  - suite: "eval/eval_memory_savings.py"
+    scorer: memory_savings_bytes
+    baseline: main
+    metrics:
+      memory_savings_bytes:
+        direction: ">"
+        threshold: 5000000  # Expecting at least 5MB saved
+        role: target
+      correctness:
+        direction: ">="
+        threshold: 1.0  # Ensure computation correctness with the same norm value
+        role: guardrail
+    policy:
+      guardrail_veto: true
+    variants:
+      feature:
+        env:
+          ENABLE_FACTORED_NORM: "true"
+    held_constant:
+      - base_model
+      - input_dimensions
+      - LoRA_ranks
+    avoid:
+      - no_network
+      - no_gpu_timer
+    provenance:
+      memory_savings_bytes: "user_guidance"
+      correctness: "user_guidance"
+      suite: "synthesized"
+      held_constant: "maintainer_comment:@user"
+      avoid: "synthesized"
