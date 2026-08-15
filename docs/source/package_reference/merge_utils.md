@@ -16,9 +16,11 @@ rendered properly in your Markdown viewer.
 
 # Model merge
 
-PEFT provides several internal utilities for [merging LoRA adapters](../developer_guides/model_merging) with the TIES and DARE methods.
+PEFT provides several internal utilities for [merging LoRA adapters](../developer_guides/model_merging) with the TIES, DARE and Model Breadcrumbs methods.
 
 [[autodoc]] utils.merge_utils.prune
+
+[[autodoc]] utils.merge_utils.breadcrumbs_prune
 
 [[autodoc]] utils.merge_utils.calculate_majority_sign_mask
 
@@ -31,3 +33,5 @@ PEFT provides several internal utilities for [merging LoRA adapters](../develope
 [[autodoc]] utils.merge_utils.dare_linear
 
 [[autodoc]] utils.merge_utils.dare_ties
+
+[[autodoc]] utils.merge_utils.breadcrumbs
