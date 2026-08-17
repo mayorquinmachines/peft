@@ -127,6 +127,8 @@
         title: RoAd
       - local: package_reference/shira
         title: SHiRA
+      - local: package_reference/super_tuning
+        title: Super-Tuning
       - local: package_reference/tinylora
         title: TinyLoRA
       - local: package_reference/unilora
@@ -246,6 +248,8 @@
       title: RoAd
     - local: package_reference/shira
       title: SHiRA
+    - local: package_reference/super_tuning
+      title: Super-Tuning
     - local: package_reference/tinylora
       title: TinyLoRA
     - local: package_reference/unilora
