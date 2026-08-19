@@ -548,6 +548,33 @@ trainer = Trainer(
 )
 ```
 
+### sMuon optimizer
+
+[sMuon](https://arxiv.org/abs/2608.14492) (small Muon) adapts the [Muon optimizer](https://github.com/KellerJordan/Muon) to low-rank adapters. Muon orthogonalizes the full weight update, which is not mathematically possible for the rank-constrained update of LoRA. sMuon relaxes the Muon objective: it linearizes the adapter update in the factors `(B, A)`, orthogonalizes the resulting full-size update direction with matmul-only Newton-Schulz iterations, and pulls the orthogonalized direction back onto the factors with a least-squares step. Parameters that are not part of a low-rank factor pair (embeddings, biases, norms) are updated with AdamW.
+
+```py
+from peft import LoraConfig, get_peft_model
+from peft.optimizers import create_smuon_optimizer
+from transformers import Trainer
+
+base_model = ...
+config = LoraConfig(...)
+model = get_peft_model(base_model, config)
+
+optimizer = create_smuon_optimizer(
+    model=model,
+    lr=1e-3,
+    adam_lr=1e-4,
+)
+scheduler = None
+
+...
+trainer = Trainer(
+    ...,
+    optimizers=(optimizer, scheduler),
+)
+```
+
 
 ## Post-Training
 
