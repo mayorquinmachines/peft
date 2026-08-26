@@ -1059,6 +1059,14 @@ class LoraGAConfig:
             Default: "stable"
         stable_gamma (`int`):
             Gamma parameter for stable scaling method. Default: 16
+        n_steps (`int`):
+            Number of train_step probes used for gradient estimation. With the default of 1, gradients are estimated
+            from a single probe (standard LoRA-GA). Values > 1 enable the multi-step gradient probe from LoRA-GA²
+            (https://arxiv.org/abs/2608.19800): gradient second moments are accumulated across probe steps and the
+            adapter is initialized from the principal directions of the multi-step gradient spectrum, which captures
+            the dynamics of full fine-tuning updates more faithfully than a one-step estimate. The accumulated
+            statistics can also be used for spectrum-aware rank allocation via
+            `peft.tuners.lora.loraga.get_spectrum_aware_rank_pattern`. Default: 1
     """
 
     direction: Literal["ArBr", "A2rBr", "ArB2r", "random"] = field(
@@ -1068,6 +1076,9 @@ class LoraGAConfig:
         default="stable", metadata={"help": "Scaling strategy for initialization"}
     )
     stable_gamma: int = field(default=16, metadata={"help": "Gamma parameter for stable scaling"})
+    n_steps: int = field(
+        default=1, metadata={"help": "Number of train_step probes for multi-step gradient estimation (LoRA-GA²)"}
+    )
 
 
 @dataclass
