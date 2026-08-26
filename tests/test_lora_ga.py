@@ -17,7 +17,7 @@ import pytest
 import torch
 
 from peft import LoraConfig, PeftModel, get_peft_model
-from peft.tuners.lora import LoraGAConfig, preprocess_loraga
+from peft.tuners.lora import LoraGAConfig, get_spectrum_aware_rank_pattern, preprocess_loraga
 
 
 class TestLoraGAPreprocessing:
@@ -431,3 +431,133 @@ class TestLoraGAIntegration:
         # Should raise ValueError about no supported layers
         with pytest.raises(ValueError, match="No supported layers found"):
             preprocess_loraga(model, lora_config, train_step)
+
+
+class TestLoraGAMultiStep:
+    """Tests for the LoRA-GA² multi-step gradient probe and spectrum-aware rank allocation."""
+
+    @pytest.fixture
+    def two_layer_model(self):
+        model = torch.nn.Sequential(torch.nn.Linear(10, 10), torch.nn.Linear(10, 10))
+        model.train()
+        return model
+
+    def make_train_step(self, model):
+        def train_step():
+            for _ in range(2):
+                inputs = torch.randn(2, 10)
+                loss = model(inputs).sum()
+                loss.backward()
+
+        return train_step
+
+    def make_lora_config(self, n_steps, target_modules=("0",), **kwargs):
+        return LoraConfig(
+            r=4,
+            lora_alpha=8,
+            target_modules=list(target_modules),
+            init_lora_weights="lora_ga",
+            lora_ga_config=LoraGAConfig(direction="ArB2r", scale="stable", n_steps=n_steps),
+            **kwargs,
+        )
+
+    def test_multistep_attaches_second_moments(self, simple_model, simple_train_step):
+        lora_config = self.make_lora_config(n_steps=3)
+        preprocess_loraga(simple_model, lora_config, simple_train_step)
+
+        module = simple_model[0]
+        assert hasattr(module, "_peft_loraga_grad")
+        assert hasattr(module, "_peft_loraga_grad_left_cov")
+        assert hasattr(module, "_peft_loraga_grad_right_cov")
+        out_features, in_features = module.weight.shape
+        assert module._peft_loraga_grad_left_cov.shape == (out_features, out_features)
+        assert module._peft_loraga_grad_right_cov.shape == (in_features, in_features)
+        # Second moments are symmetric positive semi-definite
+        left_cov = module._peft_loraga_grad_left_cov
+        assert torch.allclose(left_cov, left_cov.t(), atol=1e-6)
+        assert torch.linalg.eigvalsh(left_cov).min() >= -1e-5
+
+    def test_single_step_attaches_no_second_moments(self, simple_model, simple_train_step):
+        lora_config = self.make_lora_config(n_steps=1)
+        preprocess_loraga(simple_model, lora_config, simple_train_step)
+
+        assert hasattr(simple_model[0], "_peft_loraga_grad")
+        assert not hasattr(simple_model[0], "_peft_loraga_grad_left_cov")
+        assert not hasattr(simple_model[0], "_peft_loraga_grad_right_cov")
+
+    def test_invalid_n_steps_raises(self, simple_model, simple_train_step):
+        lora_config = self.make_lora_config(n_steps=0)
+        with pytest.raises(ValueError, match="n_steps"):
+            preprocess_loraga(simple_model, lora_config, simple_train_step)
+
+    def test_multistep_init_save_load(self, tmp_path, simple_model, simple_train_step):
+        """Test that multi-step initialization produces a working model that survives save/load."""
+        torch.manual_seed(42)
+
+        lora_config = self.make_lora_config(n_steps=2)
+        preprocess_loraga(simple_model, lora_config, simple_train_step)
+        assert hasattr(simple_model[0], "_peft_loraga_grad_left_cov")
+
+        peft_model = get_peft_model(simple_model, lora_config)
+        # Statistics are consumed during initialization
+        assert not hasattr(simple_model[0], "_peft_loraga_grad_left_cov")
+        test_input = torch.randn(2, 10)
+        with torch.no_grad():
+            output_before = peft_model(test_input)
+
+        peft_model.save_pretrained(str(tmp_path))
+        loaded_model = PeftModel.from_pretrained(simple_model, str(tmp_path))
+        with torch.no_grad():
+            output_after = loaded_model(test_input)
+
+        assert torch.allclose(output_before, output_after, atol=1e-5)
+
+    def test_multistep_cached_statistics(self, tmp_path, simple_model, simple_train_step):
+        """Test that multi-step statistics round-trip through the gradient cache."""
+        torch.manual_seed(42)
+        cache_file = tmp_path / "gradient_cache.pt"
+
+        lora_config = self.make_lora_config(n_steps=2)
+        preprocess_loraga(simple_model, lora_config, simple_train_step, cache_file=str(cache_file))
+        left_cov = simple_model[0]._peft_loraga_grad_left_cov.clone()
+
+        torch.manual_seed(0)  # different seed: a fresh estimate would give different statistics
+        other_model = torch.nn.Sequential(torch.nn.Linear(10, 10))
+        other_model.train()
+        preprocess_loraga(other_model, lora_config, self.make_train_step(other_model), cache_file=str(cache_file))
+
+        assert torch.allclose(other_model[0]._peft_loraga_grad_left_cov, left_cov)
+
+    def test_rank_pattern_requires_multistep(self, simple_model, simple_train_step):
+        lora_config = self.make_lora_config(n_steps=1)
+        preprocess_loraga(simple_model, lora_config, simple_train_step)
+        with pytest.raises(ValueError, match="n_steps>1"):
+            get_spectrum_aware_rank_pattern(simple_model, lora_config)
+
+    def test_spectrum_aware_rank_pattern(self, two_layer_model):
+        """Ranks are proportional to the multi-step gradient spectral mass and usable via rank_pattern."""
+        torch.manual_seed(42)
+        model = two_layer_model
+        lora_config = self.make_lora_config(n_steps=2, target_modules=("0", "1"))
+        preprocess_loraga(model, lora_config, self.make_train_step(model))
+
+        rank_pattern = get_spectrum_aware_rank_pattern(model, lora_config)
+        assert set(rank_pattern.keys()) == {"0", "1"}
+        for name, module in model.named_modules():
+            if name in rank_pattern:
+                assert 1 <= rank_pattern[name] <= min(module.weight.shape)
+        # The layer with more gradient spectral mass must not get a smaller rank
+        traces = {
+            name: module._peft_loraga_grad_left_cov.diagonal().sum().item()
+            for name, module in model.named_modules()
+            if hasattr(module, "_peft_loraga_grad_left_cov")
+        }
+        heavier = max(traces, key=traces.get)
+        lighter = min(traces, key=traces.get)
+        assert rank_pattern[heavier] >= rank_pattern[lighter]
+
+        # The pattern drives per-layer ranks in get_peft_model
+        lora_config.rank_pattern = rank_pattern
+        peft_model = get_peft_model(model, lora_config)
+        assert peft_model.base_model.model[0].r["default"] == rank_pattern["0"]
+        assert peft_model.base_model.model[1].r["default"] == rank_pattern["1"]

@@ -31,7 +31,7 @@ from .conversion import convert_to_lora, save_as_lora
 from .eva import get_eva_state_dict, initialize_lora_eva_weights
 from .gptq import GPTQLoraLinear
 from .layer import Conv2d, Conv3d, Embedding, Linear, LoraLayer, ParamWrapper
-from .loraga import preprocess_loraga
+from .loraga import get_spectrum_aware_rank_pattern, preprocess_loraga
 from .model import LoraModel
 
 
@@ -56,6 +56,7 @@ __all__ = [
     "convert_to_lora",
     "create_arrow_model",
     "get_eva_state_dict",
+    "get_spectrum_aware_rank_pattern",
     "initialize_lora_eva_weights",
     "preprocess_loraga",
     "save_as_lora",
