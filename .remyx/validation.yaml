@@ -1,0 +1,9 @@
+# Synthesis config only — no `benchmarks:`, so this does not declare a
+# validation to run. Mentioning @remyx-ai validate still designs one; this just
+# says which connected backend designs it.
+#
+# moonshot/kimi-k3 could not finish synthesis for this repo: ~55KB of context
+# and a 16k-token budget timed out at 300s, again at 300s, and again at 600s.
+# glm-5.3 is the other backend this account has connected.
+model:
+  provider: zai
