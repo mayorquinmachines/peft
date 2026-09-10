@@ -20,13 +20,17 @@ and an identical synthetic additive rank-32 fine-tune teacher for BOTH adapters;
 real `get_peft_model` entry point and trained with the same 150-step Adam loop. No network, no Hub, no GPU.
 
 Metrics (single JSON line as the LAST stdout line):
-  param_ratio_lora_over_ternary  TARGET/GUARD threshold 8.0 in validation.yaml.
+  param_ratio_lora_over_ternary  TARGET threshold 8.0 in validation.yaml.
       Derivation: LoRA r=32 -> q 32*(3072+3072)=196,608 + v 32*(3072+1024)=131,072 = 327,680 trainable.
       TernaryAdapt default near-square blocks: q (48,48) -> A(64,64)+B(48,48)=6,400;
-      v (32,48) -> A(32,64)+B(32,48)=3,584; total 9,984. Expected ratio 327,680/9,984 ~= 32.8.
-  lora_fit_loss_reduction_pct    GUARDRAIL (>= 50.0): untouched LoRA path must still close most of the MSE gap
-      (teacher is exactly a rank-32 additive delta, i.e. a classic LoRA fine-tune).
-  ternary_fit_loss_reduction_pct REPORTED (>= 20.0): TernaryAdapt retention on the SAME task.
+      v (32,48) -> A(32,64)+B(32,48)=3,584; total 9,984. Expected ratio 327,680/9,984 ~= 32.8,
+      so 8.0 sits ~4x under the derivation and 8x above parity.
+  lora_fit_loss_reduction_pct    GUARDRAIL (>= 50.0): the untouched LoRA path must still close most of the MSE
+      gap (teacher is exactly a rank-32 additive delta, i.e. a classic LoRA fine-tune that r=32 represents
+      exactly; 150 full-batch Adam steps at lr 1e-2). Baseline `main` runs the identical LoRA arm and clears
+      this, so it catches regressions (e.g. the dynamic PeftType mutation breaking existing tuners).
+  ternary_fit_loss_reduction_pct REPORTED (>= 20.0): the "without losing fit" half of the claim — TernaryAdapt
+      retention on the SAME task. Report-only: baseline `main` has no ternary tuner and reads 0.0 there.
 
 Baseline symmetry: on `main` the package `peft.tuners.ternary_adapt` does not exist, so ternary metrics degrade
 to 0.0 (ratio 0.0 < 8.0) while the LoRA guardrail is still measured. The feature is default-on (ternarize_base=True,
@@ -94,6 +98,7 @@ def make_fixture():
 
 
 def fit(peft_model, x, target_q, target_v):
+    """Train one adapter against the shared teacher; return (trainable params, % MSE-gap closed)."""
     params = [p for p in peft_model.parameters() if p.requires_grad]
     if not params:
         return 0, 0.0
@@ -120,12 +125,16 @@ def main():
     x, target_q, target_v = make_fixture()
 
     # Guardrail arm: standard LoRA through the shared get_peft_model path (identical on both refs).
-    lora_params, lora_reduction = fit(
-        get_peft_model(make_base(), LoraConfig(r=RANK, lora_alpha=RANK, target_modules=["q_proj", "v_proj"])),
-        x,
-        target_q,
-        target_v,
-    )
+    lora_params, lora_reduction = 0, 0.0
+    try:
+        lora_params, lora_reduction = fit(
+            get_peft_model(make_base(), LoraConfig(r=RANK, lora_alpha=RANK, target_modules=["q_proj", "v_proj"])),
+            x,
+            target_q,
+            target_v,
+        )
+    except Exception as exc:  # noqa: BLE001  failure -> guardrail reads 0.0, never a crash
+        print(f"lora measurement failed: {type(exc).__name__}: {exc}", file=sys.stderr)
 
     # Feature arm: TernaryAdapt with its default-on mechanism (in-place base ternarization + identity init).
     ternary_params, ternary_reduction = 0, 0.0
@@ -137,10 +146,10 @@ def main():
                 target_q,
                 target_v,
             )
-        except Exception as exc:  # noqa: BLE001  failures surface as metric values, never a crash
+        except Exception as exc:  # noqa: BLE001  failure -> ternary metrics read 0.0 (ratio 0.0 < 8.0)
             print(f"ternary_adapt measurement failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-    ratio = lora_params / ternary_params if ternary_params > 0 else 0.0
 
+    ratio = lora_params / ternary_params if ternary_params > 0 else 0.0
     print(
         json.dumps(
             {
