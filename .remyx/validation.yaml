@@ -1,3 +1,5 @@
+model:
+  provider: zai
 # Suite kind (a): the repo's own MetaMathQA harness. The claim names MetaMathQA and this repo publishes comparable
 # numbers from exactly this runner, so a synthesized CPU surrogate would answer a different question. The published
 # LoRA r=32 corpus row IS the baseline; no baseline arm runs. Metric keys are copied character-for-character from
