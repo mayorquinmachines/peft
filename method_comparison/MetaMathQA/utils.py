@@ -136,7 +136,7 @@ class TrainConfig:
         if self.optimizer_type not in ["lora+", "lora-fa"] and not hasattr(torch.optim, self.optimizer_type):
             raise ValueError(f"Invalid optimizer_type: {self.optimizer_type}")
         if self.lr_scheduler not in [None, "cosine"]:
-            raise ValueError(f"Invalid lr_scheduler: {self.lr_scheduler}, must be None or 'cosine'")
+            raise ValueError(f"Invalid lr_scheduler argument: {self.lr_scheduler}, must be None or 'cosine'")
         if "{query}" not in self.query_template:
             raise ValueError("Invalid query_template, must contain '{query}'")
 
@@ -429,8 +429,8 @@ def convert_to_decimal(s: Optional[str]) -> Optional[Decimal]:
     Converts a string representing a number to a Decimal.
 
     The string may be:
-      - A simple number (e.g., "13", "65.33")
-      - A fraction (e.g., "20/14")
+      - A simple number (e.g. "13", "65.33")
+      - A fraction (e.g. "20/14")
     """
     if s is None:
         return None
@@ -522,206 +522,29 @@ def get_git_hash(module) -> Optional[str]:
     if "site-packages" in module.__path__[0]:
         return None
 
-    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=os.path.dirname(module.__file__)).decode().strip()
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=os.path.dirname(module.__file__)
+        ).decode().strip()
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        # the module directory is not a git repository (e.g. a source install without the .git dir, or git is
+        # unavailable); the commit hash is logging metadata only, so degrade to None instead of failing the run
+        return None
 
 
 def get_package_info() -> dict[str, Optional[str]]:
     """Get the package versions and commit hashes of transformers, peft, datasets, bnb, and torch"""
     package_info = {
-        "transformers-version": transformers.__version__,
-        "transformers-commit-hash": get_git_hash(transformers),
-        "peft-version": peft.__version__,
         "peft-commit-hash": get_git_hash(peft),
-        "datasets-version": datasets.__version__,
+        "transformers-commit-hash": get_git_hash(transformers),
         "datasets-commit-hash": get_git_hash(datasets),
-        "bitsandbytes-version": bitsandbytes.__version__,
         "bitsandbytes-commit-hash": get_git_hash(bitsandbytes),
+        "python-version": platform.python_version(),
         "torch-version": torch.__version__,
-        "torch-commit-hash": get_git_hash(torch),
+        "transformers-version": transformers.__version__,
+        "peft-version": peft.__version__,
+        "datasets-version": datasets.__version__,
+        "bitsandbytes-version": bitsandbytes.__version__,
+        "platform": platform.platform(),
     }
     return package_info
-
-
-def get_system_info() -> dict[str, str]:
-    device = infer_device()
-    torch_accelerator_module = getattr(torch, device, torch.cuda)
-    system_info = {
-        "system": platform.system(),
-        "release": platform.release(),
-        "version": platform.version(),
-        "machine": platform.machine(),
-        "processor": platform.processor(),
-        "accelerator": torch_accelerator_module.get_device_name(0),
-    }
-    return system_info
-
-
-@dataclass
-class MetaInfo:
-    package_info: dict[str, Optional[str]]
-    system_info: dict[str, str]
-    pytorch_info: str
-
-
-def get_meta_info() -> MetaInfo:
-    meta_info = MetaInfo(
-        package_info=get_package_info(),
-        system_info=get_system_info(),
-        pytorch_info=torch.__config__.show(),
-    )
-    return meta_info
-
-
-def get_peft_branch() -> str:
-    return (
-        subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=os.path.dirname(peft.__file__))
-        .decode()
-        .strip()
-    )
-
-
-class TrainStatus(enum.Enum):
-    FAILED = "failed"
-    SUCCESS = "success"
-    CANCELED = "canceled"
-
-
-@dataclass
-class TrainResult:
-    status: TrainStatus
-    train_time: float
-    accelerator_memory_reserved_log: list[int]
-    losses: list[float]
-    metrics: list[Any]  # TODO
-    error_msg: str
-    num_trainable_params: int
-    num_total_params: int
-
-
-def log_to_console(log_data: dict[str, Any], print_fn: Callable[..., None]) -> None:
-    accelerator_memory_max = log_data["train_info"]["accelerator_memory_max"]
-    accelerator_memory_avg = log_data["train_info"]["accelerator_memory_reserved_avg"]
-    accelerator_memory_reserved_99th = log_data["train_info"]["accelerator_memory_reserved_99th"]
-    time_train = log_data["train_info"]["train_time"]
-    time_total = log_data["run_info"]["total_time"]
-    file_size = log_data["train_info"]["file_size"]
-
-    print_fn(f"accelerator memory max: {accelerator_memory_max // 2**20}MB")
-    print_fn(f"accelerator memory reserved avg: {accelerator_memory_avg // 2**20}MB")
-    print_fn(f"accelerator memory reserved 99th percentile: {accelerator_memory_reserved_99th // 2**20}MB")
-    print_fn(f"train time: {time_train}s")
-    print_fn(f"total time: {time_total:.2f}s")
-    print_fn(f"file size of checkpoint: {file_size / 2**20:.1f}MB")
-
-
-def log_to_file(
-    *, log_data: dict, save_dir: str, experiment_name: str, timestamp: str, print_fn: Callable[..., None]
-) -> None:
-    if save_dir.endswith(RESULT_PATH):
-        file_name = f"{experiment_name.replace(os.path.sep, '--')}.json"
-    else:
-        # For cancelled and temporary runs, we want to include the timestamp, as these runs are not tracked in git, thus
-        # we need unique names to avoid losing history.
-        file_name = f"{experiment_name.replace(os.path.sep, '--')}--{timestamp.replace(':', '-')}.json"
-    file_name = os.path.join(save_dir, file_name)
-    with open(file_name, "w") as f:
-        json.dump(log_data, f, indent=2)
-    print_fn(f"Saved log to: {file_name}")
-
-
-def log_results(
-    *,
-    experiment_name: str,
-    train_result: TrainResult,
-    accelerator_memory_init: int,
-    time_total: float,
-    file_size: int,
-    model_info: Optional[huggingface_hub.ModelInfo],
-    datasets_info: dict[str, Optional[huggingface_hub.DatasetInfo]],
-    start_date: str,
-    train_config: TrainConfig,
-    peft_config: Optional[PeftConfig],
-    print_fn: Callable[..., None],
-) -> None:
-    # collect results
-    device = infer_device()
-    torch_accelerator_module = getattr(torch, device, torch.cuda)
-    accelerator_memory_final = torch_accelerator_module.max_memory_reserved()
-    accelerator_memory_avg = int(
-        sum(train_result.accelerator_memory_reserved_log) / len(train_result.accelerator_memory_reserved_log)
-    )
-    accelerator_memory_reserved_99th = int(np.percentile(train_result.accelerator_memory_reserved_log, 99))
-
-    meta_info = get_meta_info()
-    if model_info is not None:
-        model_sha = model_info.sha
-        model_created_at = model_info.created_at.isoformat()
-    else:
-        model_sha = None
-        model_created_at = None
-
-    dataset_info_log = {}
-    for key, dataset_info in datasets_info.items():
-        if dataset_info is not None:
-            dataset_sha = dataset_info.sha
-            dataset_created_at = dataset_info.created_at.isoformat()
-        else:
-            dataset_sha = None
-            dataset_created_at = None
-        dataset_info_log[key] = {"sha": dataset_sha, "created_at": dataset_created_at}
-
-    peft_branch = get_peft_branch()
-
-    if train_result.status == TrainStatus.CANCELED:
-        save_dir = RESULT_PATH_CANCELLED
-        print_fn("Experiment run was categorized as canceled")
-    elif peft_branch != "main":
-        save_dir = RESULT_PATH_TEST
-        print_fn(f"Experiment run was categorized as a test run on branch {peft_branch}")
-    elif train_result.status == TrainStatus.SUCCESS:
-        save_dir = RESULT_PATH
-        print_fn("Experiment run was categorized as successful run")
-    else:
-        save_dir = tempfile.mkdtemp()
-        print_fn(f"Experiment could not be categorized, writing results to {save_dir}. Please open an issue on PEFT.")
-
-    if peft_config is None:
-        peft_config_dict: Optional[dict[str, Any]] = None
-    else:
-        peft_config_dict = peft_config.to_dict()
-        for key, value in peft_config_dict.items():
-            if isinstance(value, set):
-                peft_config_dict[key] = list(value)
-
-    log_data = {
-        "run_info": {
-            "created_at": start_date,
-            "total_time": time_total,
-            "experiment_name": experiment_name,
-            "peft_branch": peft_branch,
-            "train_config": asdict(train_config),
-            "peft_config": peft_config_dict,
-            "error_msg": train_result.error_msg,
-        },
-        "train_info": {
-            "accelerator_memory_reserved_avg": accelerator_memory_avg,
-            "accelerator_memory_max": (accelerator_memory_final - accelerator_memory_init),
-            "accelerator_memory_reserved_99th": accelerator_memory_reserved_99th,
-            "train_time": train_result.train_time,
-            "file_size": file_size,
-            "num_trainable_params": train_result.num_trainable_params,
-            "num_total_params": train_result.num_total_params,
-            "status": train_result.status.value,
-            "metrics": train_result.metrics,
-        },
-        "meta_info": {
-            "model_info": {"sha": model_sha, "created_at": model_created_at},
-            "dataset_info": dataset_info_log,
-            **asdict(meta_info),
-        },
-    }
-
-    log_to_console(log_data, print_fn=print)  # use normal print to be able to redirect if so desired
-    log_to_file(
-        log_data=log_data, save_dir=save_dir, experiment_name=experiment_name, timestamp=start_date, print_fn=print_fn
-    )
