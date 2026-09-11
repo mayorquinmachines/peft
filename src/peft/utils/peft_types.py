@@ -53,6 +53,7 @@ class PeftType(str, enum.Enum):
     - GRALORA
     - ADAMSS
     - DEFT
+    - TERNARY_ADAPT
     """
 
     PROMPT_TUNING = "PROMPT_TUNING"
@@ -98,6 +99,7 @@ class PeftType(str, enum.Enum):
     PSOFT = "PSOFT"
     PEANUT = "PEANUT"
     DEFT = "DEFT"
+    TERNARY_ADAPT = "TERNARY_ADAPT"
 
 
 class TaskType(str, enum.Enum):
