@@ -79,10 +79,6 @@ class TernaryAdaptLayer(BaseTunerLayer):
         # ternarized) pre-merge base weight is cached per merged adapter and restored on unmerge.
         self._cached_base_weight = {}
         self._is_base_ternarized = False
-        # The original full-precision base weight, cached before in-place ternarization. When adapters are disabled
-        # (e.g. `model.disable_adapter()`), the forward must use the untouched pretrained weights, since the
-        # ternarization is part of the *adaptation*, not of the base model itself.
-        self._original_base_weight = None
         # Mark the weight as unmerged
         self._disable_adapters = False
         self.merged_adapters = []
@@ -145,21 +141,12 @@ class TernaryAdaptLayer(BaseTunerLayer):
             return
 
         with torch.no_grad():
-            # keep the untouched pretrained weights so the disable-adapter path can restore exact base behavior
-            self._original_base_weight = base_weight.data.clone()
             weight = transpose(base_weight.data.to(torch.float32), self.fan_in_fan_out)
             ternary, scale = ternarize_rows(weight)
             base_weight.data = transpose(ternary * scale, self.fan_in_fan_out).to(
                 dtype=base_weight.dtype, device=base_weight.device
             )
         self._is_base_ternarized = True
-
-    def _forward_with_original_weight(self, x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
-        """Forward using the cached original (pre-ternarization) pretrained weights."""
-        base_layer = self.get_base_layer()
-        weight = self._original_base_weight
-        x = self._cast_input_dtype(x, weight.dtype)
-        return F.linear(x, weight, bias=base_layer.bias)
 
     def reset_ternary_adapt_parameters(self, adapter_name: str, init_weights: bool = True) -> None:
         if adapter_name not in self.ternary_adapt_A.keys():
@@ -239,7 +226,7 @@ class TernaryAdaptLinear(nn.Module, TernaryAdaptLayer):
                 before merging the weights. This is useful if you want to check if the merge operation will produce
                 NaNs. Defaults to `False`.
             adapter_names (`List[str]`, *optional*):
-                The list of adapters that should be merged. If `None`, all active adapters will be merged.
+                The list of adapter names that should be merged. If `None`, all active adapters will be merged.
                 Defaults to `None`.
         """
         adapter_names = check_adapters_to_merge(self, adapter_names)
@@ -291,12 +278,7 @@ class TernaryAdaptLinear(nn.Module, TernaryAdaptLayer):
         if self.disable_adapters:
             if self.merged:
                 self.unmerge()
-            if self._is_base_ternarized and (self._original_base_weight is not None):
-                # adapters are disabled: fall back to the untouched pretrained (full-precision) weights, since the
-                # in-place ternarization belongs to the adaptation, not the base model
-                result = self._forward_with_original_weight(x, *args, **kwargs)
-            else:
-                result = self.base_layer(x, *args, **kwargs)
+            result = self.base_layer(x, *args, **kwargs)
         elif self.merged:
             result = self.base_layer(x, *args, **kwargs)
         elif not any(active_adapter in self.ternary_adapt_A.keys() for active_adapter in self.active_adapters):
