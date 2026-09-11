@@ -522,7 +522,10 @@ def get_git_hash(module) -> Optional[str]:
     if "site-packages" in module.__path__[0]:
         return None
 
-    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=os.path.dirname(module.__file__)).decode().strip()
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=os.path.dirname(module.__file__)).decode().strip()
+    except (subprocess.CalledProcessError, OSError):
+        return None
 
 
 def get_package_info() -> dict[str, Optional[str]]:
