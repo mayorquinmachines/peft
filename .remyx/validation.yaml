@@ -5,7 +5,7 @@ benchmarks:
     suite:
       harness:
         notebook: .remyx/validations/kappa-lora-metamathqa.ipynb
-        runner: "method_comparison/MetaMathQA/Makefile"
+        runner: "method_comparison/MetaMathQA/run.py"
         experiments: "experiments/kappa-lora/llama-3.2-3B-rank32"
         results_glob: "results/*.json"
         method: "lora"
@@ -50,7 +50,7 @@ benchmarks:
     provenance:
       num_trainable_params: "user_guidance"
       test_accuracy: "user_guidance"
-      suite: "repo_runner:method_comparison/MetaMathQA/Makefile"
+      suite: "repo_runner:method_comparison/MetaMathQA/run.py"
       held_constant: "protocol_doc:method_comparison/README.md"
       baseline: "published corpus:method_comparison/MetaMathQA/results/lora--llama-3.2-3B-rank32.json"
       timeout_s: "published corpus runtimes"
