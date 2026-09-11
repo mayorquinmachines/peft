@@ -1,2 +1,58 @@
 model:
   provider: zai
+benchmarks:
+  - name: kappa-lora-halve-params
+    suite:
+      harness:
+        notebook: .remyx/validations/kappa-lora-halve-params.ipynb
+        runner: method_comparison/MetaMathQA/run.py
+        experiments: experiments/kappa-lora/llama-3.2-3B-rank32
+        results_glob: method_comparison/MetaMathQA/results/kappa-lora--*.json
+        method: kappa-lora
+    scorer: num_trainable_params
+    # the published standard-LoRA row IS the baseline, so only the feature arm runs;
+    # the kappa-lora config enables the default-off flag condition_number_top_fraction=0.5
+    baseline:
+      source: method_comparison/MetaMathQA/results/lora--llama-3.2-3B-rank32.json
+      values:
+        # analytic standard-LoRA count for r=32 over q/k/v/o/gate/up/down of Llama-3.2-3B (28 layers):
+        # 28 * (2*196608 + 2*131072 + 3*360448) = 48,627,712
+        num_trainable_params: 48627712
+    metrics:
+      - name: num_trainable_params
+        direction: min
+        # 0.60 x 48,627,712: top half of the 196 matched modules by condition number is expected near 24.3M;
+        # allows skew to ~0.6x if the larger MLP projections dominate the ranking while still demanding a >=40% cut
+        threshold: 29176627
+        role: target
+      - name: test_accuracy
+        direction: max
+        # in-distribution MetaMathQA eval of a rank-32-tuned Llama-3.2-3B scores well above 0.4;
+        # this floor (cleared by the published LoRA row) flags a >10-point fit collapse
+        threshold: 0.4
+        role: guardrail
+    policy:
+      guardrail_veto: true
+    compute:
+      tier: gpu
+      # one arm: ~7 GB gated model download + LoRA SFT on the harness MetaMathQA subset (~1k steps x ~3 s/step on one A100) + eval ~= 2 h; 4 h leaves headroom
+      timeout_s: 14400
+    held_constant:
+      - "base model meta-llama/Llama-3.2-3B"
+      - "the harness's default_training_params.json (learning rate, epochs, batch size, seed)"
+      - "LoRA rank r=32 and the seven target projections, matching the published lora--llama-3.2-3B-rank32 row"
+      - "identical eval split and scoring as the published corpus"
+    avoid:
+      - "editing training_params.json or any harness default (breaks comparability with the published corpus)"
+      - "unpinned base-model or dataset revisions drifting between runs"
+      - "wall-clock or throughput comparisons (not the mechanism under test)"
+    provenance:
+      suite: "repo_runner:method_comparison/MetaMathQA/run.py"
+      num_trainable_params: "user_guidance"
+      test_accuracy: "maintainer_comment:@mayorquinmachines"
+      baseline: "published corpus method_comparison/MetaMathQA/results/lora--llama-3.2-3B-rank32.json"
+      baseline_num_trainable_params: "inferred"
+      num_trainable_params_threshold: "inferred"
+      test_accuracy_threshold: "inferred"
+      held_constant: "protocol_doc:method_comparison/README.md"
+      experiments: "synthesized"
