@@ -1,2 +1,49 @@
 model:
   provider: zai
+benchmarks:
+  - name: kappa-lora-halve-params
+    suite:
+      harness:
+        notebook: .remyx/validations/kappa-lora-halve-params.ipynb
+        runner: method_comparison/MetaMathQA/run.py
+        experiments: experiments/kappa-lora/llama-3.2-3B-rank32
+        results_glob: method_comparison/MetaMathQA/results/kappa-lora--*.json
+        method: lora
+      scorer: num_trainable_params
+      metrics:
+        - name: num_trainable_params
+          direction: min
+          # derivation: LoRA r=32 on Llama-3.2-3B over the 7 projections x 28 layers = 32*(3072+3072)*2 + 32*(3072+1024)*2 + 32*(3072+8192)*3 per layer = 1,736,704; x28 = 48,627,712 trainable params (the published lora--llama-3.2-3B-rank32 row). Selecting the top 50% of the 196 matched modules by condition number is expected to keep about half (~24.3M); 0.6x = 29,176,627 absorbs module-size skew in the selection while still certifying the halving claim.
+          threshold: 29176627
+          role: target
+        - name: test_accuracy
+          direction: max
+          # floor: a functioning MetaMathQA-tuned Llama-3.2-3B LoRA (the published baseline row) clears this comfortably; degenerate targeting or dropped modules collapse far below it. Tighten to (published row - epsilon) at review by reading lora--llama-3.2-3B-rank32.json.
+          threshold: 0.5
+          role: guardrail
+    baseline:
+      source: method_comparison/MetaMathQA/results/lora--llama-3.2-3B-rank32.json
+      values:
+        num_trainable_params: 48627712
+    policy:
+      guardrail_veto: true
+    held_constant:
+      - "base model: meta-llama/Llama-3.2-3B, same weights as the published lora row"
+      - "LoRA rank r=32 over the same 7 target projections as experiments/lora/llama-3.2-3B-rank32"
+      - "training protocol from the harness default_training_params.json (seed, lr, batch size, steps) unchanged"
+      - "same MetaMathQA test split and accuracy metric as the published corpus"
+    avoid:
+      - "unpinned base-model revision"
+      - "overriding default_training_params.json"
+      - "wall-clock gating across arms"
+    compute:
+      tier: gpu
+      # one arm = 3B bf16 LoRA fine-tune on the harness's own MetaMathQA protocol (~5k-25k steps at ~1.5-2 s/step on a single A100/H100, protocol peaks >22 GB VRAM per the suite docs) plus test-set eval; 12 h with headroom.
+      timeout_s: 43200
+    provenance:
+      num_trainable_params: "user_guidance + maintainer_comment:@mayorquinmachines"
+      test_accuracy: "maintainer_comment:@mayorquinmachines"
+      suite: "repo_runner:method_comparison/MetaMathQA/run.py"
+      experiments: "inferred (new experiments/kappa-lora/llama-3.2-3B-rank32 mirroring the experiments/adalora/llama-3.2-3B-rank32 shape; kappa-lora is the configuration this PR adds)"
+      baseline: "published corpus: method_comparison/MetaMathQA/results/lora--llama-3.2-3B-rank32.json (num_trainable_params derived from the mirrored r=32 config)"
+      held_constant: "protocol_doc:method_comparison/MetaMathQA/README.md"
