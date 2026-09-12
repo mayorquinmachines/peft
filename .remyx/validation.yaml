@@ -1,2 +1,80 @@
 model:
   provider: zai
+benchmarks:
+  - name: kappa-lora-metamathqa-rank32
+    suite:
+      harness:
+        notebook: .remyx/validations/kappa-lora-metamathqa-rank32.ipynb
+        runner: method_comparison/MetaMathQA/run.py
+        experiments: experiments/lora/llama-3.2-3B-rank32-kappa0.5
+        results_glob: method_comparison/MetaMathQA/temporary_results/lora--llama-3.2-3B-rank32-kappa0.5--*.json
+        method: lora
+        smoke:
+          # keys mirror the harness's own training-params file (the 5k/lr naming of the ia3/frod training_params.json siblings);
+          # 30 steps + eval every 15 proves the whole pipeline (gated download, injection, train, GSM8K eval, result JSON) in minutes
+          params_path: method_comparison/MetaMathQA/default_training_params.json
+          overrides:
+            max_steps: 30
+            eval_steps: 15
+      scorer: num_trainable_params
+      metrics:
+        # full LoRA r=32 all-linear on Llama-3.2-3B = 28*(2*6144 + 2*4096 + 3*11264)*32 = 48,627,712 params; "halves" -> <= exactly half = 24,313,856.
+        # kappa keeps ceil(196*0.5)=98 modules by COUNT irrespective of size (131,072-360,448 params each), so the realized share
+        # ranges 32.1% (attention-light) to 67.9% (MLP-heavy); this threshold is therefore the honest test of the "halves" claim, not a formality.
+        - name: num_trainable_params
+          direction: min
+          threshold: 24313856
+          role: target
+        # guardrail floor: 0.4632 same-protocol GSM8K test-accuracy reference - 0.02 parity band (notebook user_resource);
+        # baseline row (published lora rank32) is itself comfortably above it
+        - name: "test accuracy"
+          direction: max
+          threshold: 0.4432
+          role: guardrail
+        # 0.5000 same-protocol valid-accuracy reference - 0.02
+        - name: "valid accuracy"
+          direction: max
+          threshold: 0.48
+          role: guardrail
+        # 26.1-min (1566 s) A100 same-protocol reference run; paper's -16.2% would imply ~1312 s; cost role - reported, never a gate
+        - name: total_time
+          direction: min
+          threshold: 1566.0
+          role: cost
+    baseline:
+      source: method_comparison/MetaMathQA/results/lora--llama-3.2-3B-rank32.json
+      values:
+        num_trainable_params: 48627712
+        "test accuracy": 0.4632
+        "valid accuracy": 0.5
+    compute:
+      tier: gpu
+      # reference same-protocol run: 26.1 min (1566 s) on A100 for 5000 steps + GSM8K valid/test; 2.3x headroom covers the
+      # full-LoRA-sized per-step cost, the 196 one-time fp32 SVDs (up to 8192x3072) at injection, and eval generation
+      timeout_s: 3600
+    policy:
+      guardrail_veto: true
+    held_constant:
+      - "base model meta-llama/Llama-3.2-3B (28 layers, hidden 3072), gated access via HF_TOKEN"
+      - "5000 train steps on MetaMathQA, GSM8K valid + test eval, single run via the repo's own run.py harness"
+      - "LoRA r=32, lora_alpha=32, lora_dropout=0.0, same 7 target module types as the published lora--llama-3.2-3B-rank32 row"
+      - "no training_params.json in the new experiment dir so the harness default_training_params.json protocol applies unchanged"
+      - "kappa selection computed once at injection on fp32 base weights; rank r, alpha and every other LoraConfig knob untouched by the diff"
+    avoid:
+      - "unpinned base-model revisions"
+      - "gating on time or memory: the paper's -16.2% time / -4.5% memory are cross-benchmark averages and the MetaMathQA result rows carry no memory field"
+      - "comparing against supertuning/deft/unilora rows: only lora--llama-3.2-3B-rank32 is protocol-comparable"
+      - "reading accuracy deltas smaller than 0.02 as signal: the notebook's parity band is +/-0.02 on this single-run protocol"
+      - "editing run.py or default_training_params.json to accommodate the experiment"
+    provenance:
+      num_trainable_params: "user_guidance: halves trainable params vs standard LoRA; threshold = 28*(2*6144+2*4096+3*11264)*32/2 exactly from Llama-3.2-3B geometry"
+      "test accuracy": "user_resource:https://colab.research.google.com/drive/1z73-jtAGrq4HkjvorjFcZ77uMwdmWs56?usp=sharing"
+      "valid accuracy": "user_resource:https://colab.research.google.com/drive/1z73-jtAGrq4HkjvorjFcZ77uMwdmWs56?usp=sharing"
+      total_time: "user_resource:https://colab.research.google.com/drive/1z73-jtAGrq4HkjvorjFcZ77uMwdmWs56?usp=sharing"
+      suite: "repo_runner:method_comparison/MetaMathQA/run.py"
+      baseline: "published_corpus:method_comparison/MetaMathQA/results/lora--llama-3.2-3B-rank32.json"
+      held_constant: "protocol_doc:method_comparison/MetaMathQA/README.md"
+      compute: "user_resource:https://colab.research.google.com/drive/1z73-jtAGrq4HkjvorjFcZ77uMwdmWs56?usp=sharing"
+loop:
+  max_iterations: 8
+  fix_code: true
