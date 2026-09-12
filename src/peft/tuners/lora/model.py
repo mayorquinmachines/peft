@@ -56,6 +56,7 @@ from .gptq import dispatch_gptq
 from .hqq import dispatch_hqq
 from .inc import dispatch_inc
 from .layer import Conv2d, LoraLayer, ParamWrapper, dispatch_default
+from .spectral_targeting import select_top_condition_number_modules
 from .te import dispatch_transformer_engine
 from .torchao import dispatch_torchao
 from .tp_layer import dispatch_megatron
@@ -580,7 +581,22 @@ class LoraModel(BaseTuner):
                     peft_config.target_modules = set(target_modules)
             elif not peft_config.target_parameters:
                 raise ValueError("Please specify `target_modules` or `target_parameters`in `peft_config`")
+        if peft_config.condition_number_top_fraction is not None:
+            # κ-LoRA-style spectral targeting: restrict adaptation to the targeted weight matrices with the largest
+            # condition numbers. The selection is stored as a runtime attribute (not serialized with the config) and
+            # recomputed on each injection, which keeps saving/loading idempotent.
+            peft_config._condition_number_targets = select_top_condition_number_modules(
+                self.model, peft_config, peft_config.condition_number_top_fraction
+            )
         return peft_config
+
+    def _check_target_module_exists(self, peft_config: LoraConfig, key: str) -> bool | re.Match[str] | None:
+        result = super()._check_target_module_exists(peft_config, key)
+        if result:
+            selection = getattr(peft_config, "_condition_number_targets", None)
+            if selection is not None:
+                return key in selection
+        return result
 
     def _check_add_weighted_adapter(
         self, adapters: list[str], combination_type: str, svd_rank: int | None
@@ -731,6 +747,9 @@ class LoraModel(BaseTuner):
             target_modules=new_target_modules,
             alpha_pattern={},
             rank_pattern={},
+            # the merged adapter already carries the exact target names of the source adapters; re-applying
+            # condition number targeting to them would silently drop merged modules
+            condition_number_top_fraction=None,
         )
         self.inject_adapter(self.model, adapter_name)
 
