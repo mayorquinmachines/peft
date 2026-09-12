@@ -36,9 +36,10 @@ benchmarks:
           # published row 0.49052312357846856 minus the ±0.02 parity band this repo's own harness notebook uses
           threshold: 0.4705
         - name: forgetting
-          role: guardrail
+          role: cost
           direction: min
-          # published 0.4156990051269531 + 0.02 band
+          # published 0.4156990051269531 + 0.02 band — reporting reference only, never a gate (user guidance:
+          # a noisy forgetting number must not veto the param-count/accuracy question)
           threshold: 0.4357
         - name: total_time
           role: cost
@@ -90,5 +91,6 @@ provenance:
   experiments: "user_guidance"
   target_threshold: "inferred: 28*196608 all-q_proj worst case among ceil(56*0.5)=28 selected modules"
   accuracy_guardrail: "user_resource:colab parity band ±0.02 applied to the published 0.490523"
+  forgetting_cost_role: "user_guidance: keep forgetting, time and memory as cost references only — must not veto the run"
   held_constant: "protocol_doc:method_comparison/MetaMathQA/README.md"
   compute: "inferred: the claim is about a 5000-step fine-tuning run; no CPU-valid instrument observes fit or param count under the published protocol"
