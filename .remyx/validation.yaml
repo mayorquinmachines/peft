@@ -18,9 +18,8 @@ benchmarks:
           # truncate the published 5000-step regime to a few minutes of plumbing proof;
           # keys must be the step-count / eval-interval / generation-length keys of that file
           overrides:
-            num_steps: 20
+            max_steps: 20
             eval_steps: 10
-            max_new_tokens: 16
       scorer: num_trainable_params
       metrics:
         - name: num_trainable_params
