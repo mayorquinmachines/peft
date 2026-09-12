@@ -1,2 +1,76 @@
 model:
   provider: zai
+loop: {max_iterations: 8, fix_code: true}
+benchmarks:
+  - name: kappa-lora-metamathqa-top50
+    suite:
+      harness:
+        notebook: .remyx/validations/kappa-lora-metamathqa-top50.ipynb
+        runner: "method_comparison/MetaMathQA/run.py"
+        experiments: "experiments/lora/llama-3.2-3B-rank32-kappa-top50"
+        results_glob: "method_comparison/MetaMathQA/temporary_results/lora--*.json"
+        method: "lora"
+        smoke:
+          params_path: "method_comparison/MetaMathQA/default_training_params.json"
+          overrides:
+            num_steps: 8
+            eval_steps: 4
+      scorer: "num_trainable_params"
+      metrics:
+        - name: "num_trainable_params"
+          direction: min
+          # 28 of 56 matched modules kept (ceil(0.5*56)); worst case all q_proj: 28*32*(3072+3072)=5,505,024 = 60.0% of baseline 9,175,040.
+          # Expected value = 3,670,016 + k*65,536 with k = number of selected q_proj in [0,28]; exactly 50% (4,587,520) iff k=14.
+          threshold: 5505024
+          role: target
+        - name: "test_accuracy"
+          direction: max
+          # 0.49052312357846856 - 0.02 = one-sided floor at the repo's demonstrated parity band on this exact harness/model/eval (user_resource notebook).
+          threshold: 0.4705
+          role: guardrail
+        - name: "total_time"
+          direction: min
+          # row total_time 1173.714544863964 s + the notebook's 3-min (180 s) wall-clock tolerance = 1353.71 s.
+          threshold: 1353.7
+          role: cost
+        - name: "accelerator_memory_max"
+          direction: min
+          # no memory regression vs the row's 22,286,434,304 bytes (paper's -4.5% = 21,283,544,760 is an expectation, not a gate).
+          threshold: 22286434304
+          role: cost
+      policy:
+        guardrail_veto: true
+    baseline:
+      source: "method_comparison/MetaMathQA/results/lora--llama-3.2-3B-rank32.json"
+      values:
+        num_trainable_params: 9175040.0
+        num_total_params: 3221924864.0
+        test_accuracy: 0.49052312357846856
+        total_time: 1173.714544863964
+        train_time: 958.3276851720293
+        accelerator_memory_max: 22286434304.0
+        forgetting: 0.4156990051269531
+    compute:
+      tier: gpu
+      # one arm: row total_time 1173.7s + 180s tolerance + gated Llama-3.2-3B download (~6.5 GB) + 56-SVD pre-pass (seconds, largest 3072x3072) + setup/eval margin
+      timeout_s: 5400
+    held_constant:
+      - "base model meta-llama/Llama-3.2-3B, r=32, lora_alpha=64, lora_dropout=0.0, target_modules [v_proj, q_proj] copied verbatim from the published row config so the only delta is condition_number_top_fraction"
+      - "5000 train steps and GSM8K test eval from the harness default protocol (default_training_params.json) — no training_params.json override in the experiment dir"
+      - "harness invocation python run.py --verbose --clean experiments/lora/llama-3.2-3B-rank32-kappa-top50, the same pattern as the user's verification notebook"
+      - "same seed and data ordering from harness defaults, single run, no sweep"
+    avoid:
+      - "no unpinned base-model revision — the harness default revision is the protocol"
+      - "do not gate on bit-exactness; adapter-init RNG differs run to run, so accuracy is judged only within the ±0.02 band"
+      - "do not write into results/ — the published corpus is read-only; PR-branch runs land in temporary_results/"
+      - "do not claim a fixed 50.0% param cut — selection is by module count (28 of 56), so params land in 40-60% depending on the q/v kappa split; report the realized fraction"
+    provenance:
+      num_trainable_params: "user_guidance"
+      test_accuracy: "user_guidance + user_resource:https://colab.research.google.com/drive/1z73-jtAGrq4HkjvorjFcZ77uMwdmWs56?usp=sharing (±0.02 parity band)"
+      total_time: "user_resource:https://colab.research.google.com/drive/1z73-jtAGrq4HkjvorjFcZ77uMwdmWs56?usp=sharing (±3 min tolerance) anchored on published_row:method_comparison/MetaMathQA/results/lora--llama-3.2-3B-rank32.json"
+      accelerator_memory_max: "published_row:method_comparison/MetaMathQA/results/lora--llama-3.2-3B-rank32.json"
+      baseline: "published_row:method_comparison/MetaMathQA/results/lora--llama-3.2-3B-rank32.json"
+      suite: "repo_runner:method_comparison/MetaMathQA/run.py"
+      experiments: "inferred from PR diff field condition_number_top_fraction on LoraConfig; protocol values from published_row:method_comparison/MetaMathQA/results/lora--llama-3.2-3B-rank32.json"
+      smoke: "inferred from sibling training_params.json naming (5k steps, lr) — key names correctable by fix_code iterations"
+      held_constant: "protocol_doc:method_comparison/MetaMathQA/README.md + published row config"
