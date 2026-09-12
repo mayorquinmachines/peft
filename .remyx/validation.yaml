@@ -1,2 +1,95 @@
 model:
   provider: zai
+loop:
+  max_iterations: 8
+  fix_code: true
+
+benchmarks:
+  - name: kappa-lora-spectral-targeting
+    suite:
+      harness:
+        notebook: .remyx/validations/kappa-lora-spectral-targeting.ipynb
+        runner: method_comparison/MetaMathQA/run.py
+        experiments: experiments/lora/llama-3.2-3B-rank32-kappa05
+        results_glob: "temporary_results/lora--llama-3.2-3B-rank32-kappa05--*.json"
+        method: lora
+        smoke:
+          params_path: method_comparison/MetaMathQA/default_training_params.json
+          # truncate the published 5000-step regime to a few minutes of plumbing proof;
+          # keys must be the step-count / eval-interval / generation-length keys of that file
+          overrides:
+            num_steps: 20
+            eval_steps: 10
+            max_new_tokens: 16
+      scorer: num_trainable_params
+      metrics:
+        - name: num_trainable_params
+          role: target
+          direction: min
+          # derivation: pool = 28 q_proj (r*(3072+3072)=196608 each) + 28 v_proj (r*(3072+1024)=131072 each)
+          # = 9175040, reproducing the published row exactly. top-50% keeps ceil(56*0.5)=28 modules;
+          # all-q worst case 28*196608 = 5505024 (60.0%), all-v floor 3670016 (40.0%), 14/14 split 4587520 (exactly 50%).
+          # above 5505024 implies >28 modules injected = selection bug; expect ~4.6M.
+          threshold: 5505024
+        - name: test_accuracy
+          role: guardrail
+          direction: max
+          # published row 0.49052312357846856 minus the ±0.02 parity band this repo's own harness notebook uses
+          threshold: 0.4705
+        - name: forgetting
+          role: guardrail
+          direction: min
+          # published 0.4156990051269531 + 0.02 band
+          threshold: 0.4357
+        - name: total_time
+          role: cost
+          direction: min
+          # no-regression vs the published row; cost reference, not a parity target (paper's -16.2% is suite-averaged)
+          threshold: 1173.714544863964
+        - name: train_time
+          role: cost
+          direction: min
+          threshold: 958.3276851720293
+        - name: accelerator_memory_max
+          role: cost
+          direction: min
+          # halving ~4.6M trainable params saves ~37MB optimizer state vs a 22.3GB peak — inside noise, report only
+          threshold: 22286434304.0
+    baseline:
+      source: method_comparison/MetaMathQA/results/lora--llama-3.2-3B-rank32.json
+      values:
+        num_trainable_params: 9175040.0
+        test_accuracy: 0.49052312357846856
+        forgetting: 0.4156990051269531
+        total_time: 1173.714544863964
+        train_time: 958.3276851720293
+        accelerator_memory_max: 22286434304.0
+    compute:
+      tier: gpu
+      # published row total_time=1173.7s (~20 min on A100 incl. GSM8K eval) + gated Llama-3.2-3B download and
+      # MetaMathQA tokenization margin (~25 min) + headroom -> 5400s for ONE arm
+      timeout_s: 5400
+    policy:
+      guardrail_veto: true
+
+held_constant:
+  - "base model meta-llama/Llama-3.2-3B exactly as the published lora/llama-3.2-3B-rank32 row (gated repo, HF_TOKEN provided)"
+  - "LoRA hyperparameters copied verbatim from the row: r=32, lora_alpha=64, lora_dropout=0.0, target_modules=[v_proj, q_proj]"
+  - "training/eval regime = the harness default_training_params.json (5000 steps MetaMathQA, GSM8K eval); no training_params.json override in the new experiment dir"
+  - "same invocation as the requester's Colab pattern: python run.py --verbose --clean <experiment> from method_comparison/MetaMathQA"
+  - "condition_number_top_fraction=0.5 is the ONLY delta vs the published row's config"
+avoid:
+  - "do not widen target_modules beyond q_proj/v_proj — the published row defines the 56-module candidate pool the threshold arithmetic assumes"
+  - "unpinned revisions of the base model or datasets; keep base_model_name_or_path byte-identical to the row"
+  - "treating wall-clock or memory deltas as parity targets — they are no-regression cost references only, since the LoRA share of the 22.3GB peak is tiny"
+  - "routing the eval through add_weighted_adapter — the diff explicitly bypasses spectral targeting there"
+  - "substituting a synthetic or CPU proxy for the MetaMathQA/GSM8K run the claim names"
+provenance:
+  num_trainable_params: "published_row:method_comparison/MetaMathQA/results/lora--llama-3.2-3B-rank32.json"
+  test_accuracy: "published_row:method_comparison/MetaMathQA/results/lora--llama-3.2-3B-rank32.json"
+  suite: "user_resource:https://colab.research.google.com/drive/1z73-jtAGrq4HkjvorjFcZ77uMwdmWs56?usp=sharing"
+  experiments: "user_guidance"
+  target_threshold: "inferred: 28*196608 all-q_proj worst case among ceil(56*0.5)=28 selected modules"
+  accuracy_guardrail: "user_resource:colab parity band ±0.02 applied to the published 0.490523"
+  held_constant: "protocol_doc:method_comparison/MetaMathQA/README.md"
+  compute: "inferred: the claim is about a 5000-step fine-tuning run; no CPU-valid instrument observes fit or param count under the published protocol"
