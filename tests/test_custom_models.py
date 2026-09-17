@@ -50,6 +50,7 @@ from peft import (
     LoKrConfig,
     LoraConfig,
     MissConfig,
+    MixLoraConfig,
     MontecloraConfig,
     OFTConfig,
     OSFConfig,
@@ -622,6 +623,24 @@ TEST_CASES = [
         "MLP",
         MissConfig,
         {"target_modules": ["lin0"], "modules_to_save": ["lin1"], "r": 2, "init_weights": "bat"},
+    ),
+    ###########
+    # MixLoRA #
+    ###########
+    ("Vanilla MLP 1 MixLoRA", "MLP", MixLoraConfig, {"target_modules": "lin0", "r": 2}),
+    ("Vanilla MLP 2 MixLoRA", "MLP", MixLoraConfig, {"target_modules": ["lin0"], "r": 2}),
+    ("Vanilla MLP 3 MixLoRA", "MLP", MixLoraConfig, {"target_modules": ["lin0", "lin1"], "r": 2}),
+    (
+        "Vanilla MLP 4 MixLoRA top-1",
+        "MLP",
+        MixLoraConfig,
+        {"target_modules": ["lin0"], "r": 2, "num_experts": 3, "top_k": 1},
+    ),
+    (
+        "Vanilla MLP 5 MixLoRA",
+        "MLP",
+        MixLoraConfig,
+        {"target_modules": ["lin0"], "modules_to_save": ["lin1"], "r": 2},
     ),
     #############
     # LN Tuning #
