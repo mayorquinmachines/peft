@@ -98,3 +98,13 @@ Python 3.12+ is required.
 
 - Add further experiments (more PEFT methods) and explore better hyper-parameters.
 - Test images are already created but they're not uploaded anywhere.
+
+## Optional: Tier-2 prompt-fidelity scoring
+
+In addition to the deterministic Tier-1 metrics (DINOv2 similarity, drift), `evaluate.py` can score the prompt fidelity of the test generations with a judge vision-language model — a semantic-quality tier adapted from the two-tier evaluation methodology of [MetroLLM-Bench](https://arxiv.org/abs/2609.10016):
+
+```sh
+python evaluate.py -v /path/to/checkpoint/ --prompt-fidelity-judge Qwen/Qwen2.5-VL-3B-Instruct
+```
+
+The judge scores each generated image against the prompt it was generated from on a structured rubric (subject, attributes, composition). The mean score, normalized to [0, 1], is logged as `test prompt_fidelity` alongside the Tier-1 metrics. Any instruction-tuned VLM that supports image+text chat templates via `transformers` can be passed as the judge model id; see `prompt_fidelity.py` for details. Note that the judge model requires additional memory, which — like the DINO model — is not attributed to the PEFT method's training memory footprint.

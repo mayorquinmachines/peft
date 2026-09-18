@@ -36,6 +36,7 @@ from diffusers.training_utils import (
     compute_loss_weighting_for_sd3,
     offload_models,
 )
+from prompt_fidelity import score_prompt_fidelity
 from torch.amp import GradScaler, autocast
 from tqdm import tqdm
 from transformers import set_seed
@@ -164,7 +165,12 @@ def evaluate(
     dino_model,
     config: TrainConfig,
     num_repeats: int = 1,
+    judge_fn: Optional[Callable] = None,
+    tier2_log: Optional[list] = None,
 ) -> float:
+    # Tier 1 is the deterministic DINOv2 cosine similarity. If a `judge_fn` is passed, the generated images are
+    # additionally scored on prompt fidelity by a judge model (Tier 2, semantic quality) and the per-repeat score
+    # dicts are appended to `tier2_log`; see prompt_fidelity.py.
     with offload_models(pipeline.text_encoder, pipeline.vae, device=pipeline.transformer.device, offload=True):
         # avoid reusing same seed as in training, which would bias samples toward memorized results
         seed = config.seed + 100_000
@@ -174,6 +180,7 @@ def evaluate(
         for _ in iter_:
             generated_images = []
             reference_images = []
+            eval_prompts = []
             batch_size = config.batch_size_eval
 
             for i in range(0, len(ds_eval), batch_size):
@@ -182,6 +189,7 @@ def evaluate(
                 outputs = _generate_images(pipeline, generator=generator, prompts=prompts, config=config)
                 generated_images.extend(outputs.images)
                 reference_images.extend([sample["raw_image"] for sample in sliced])
+                eval_prompts.extend(prompts)
                 if i + batch_size >= len(ds_eval):
                     break
 
@@ -189,6 +197,10 @@ def evaluate(
             reference_embeddings = get_dino_embeddings(reference_images, processor, dino_model, batch_size=batch_size)
             cosine_sim = (generated_embeddings * reference_embeddings).sum(dim=-1)
             cosine_sim_scores.append(cosine_sim.mean().item())
+            if judge_fn is not None:
+                tier2_scores = score_prompt_fidelity(generated_images, eval_prompts, judge_fn)
+                if tier2_log is not None:
+                    tier2_log.append(tier2_scores)
         mean_sim = sum(cosine_sim_scores) / num_repeats
     return mean_sim
 
