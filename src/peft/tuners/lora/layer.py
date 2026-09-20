@@ -48,7 +48,7 @@ from peft.utils.warning import PeftWarning
 from .config import LoraConfig
 
 
-VARIANT_KWARG_KEYS = ["alora_offsets"]
+VARIANT_KWARG_KEYS = ["alora_offsets", "sibo_initial_residual"]
 
 
 class LoraVariant:
@@ -823,6 +823,7 @@ class LoraLayer(BaseTunerLayer):
         for adapter in unique_adapters:
             sub_batch_indices_list.append([index for index, item in enumerate(adapter_names) if item == adapter])
         alora_offsets = variant_kwargs.get("alora_offsets", None)
+        sibo_residual = variant_kwargs.get("sibo_initial_residual", None)
         for i, active_adapter in enumerate(unique_adapters):
             if active_adapter == "__base__":
                 continue
@@ -843,6 +844,8 @@ class LoraLayer(BaseTunerLayer):
             else:
                 if alora_offsets is not None:
                     variant_kwargs["alora_offsets"] = [alora_offsets[j] for j in sub_batch_indices_list[i]]
+                if sibo_residual is not None:
+                    variant_kwargs["sibo_initial_residual"] = sibo_residual[sub_batch_indices_list[i]]
                 lora_output = self.lora_variant[active_adapter].forward(
                     self,
                     active_adapter=active_adapter,
@@ -904,6 +907,7 @@ class Linear(nn.Module, LoraLayer):
             ("alora_invocation_tokens",): variants.ALoraLinearVariant,
             ("velora_config",): variants.VeloraLinearVariant,
             ("monteclora_config",): variants.MontecloraLinearVariant,
+            ("use_sibo",): variants.SiboLinearVariant,
             ("mica",): variants.MiCALinearVariant,
         }
 
