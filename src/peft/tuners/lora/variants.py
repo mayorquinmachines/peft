@@ -31,6 +31,7 @@ from .config import LoraConfig, PeftConfig
 from .dora import DoraConv1dLayer, DoraConv2dLayer, DoraConv3dLayer, DoraEmbeddingLayer, DoraLinearLayer
 from .layer import Conv1d, Conv2d, Conv3d, Embedding, Linear, LoraLayer, LoraVariant, _ConvNd
 from .monteclora import MontecloraSampler
+from .sibo import mix_initial_residual
 from .velora import VeloraFunction, _get_group_dim, _normalize_projection, _reshape_to_grouped_subtokens
 
 
@@ -1310,3 +1311,58 @@ class MiCAEmbeddingVariant(LoraVariant):
             adapter_output = adapter_output * embed_scale.to(adapter_output.dtype)
 
         return result + adapter_output
+
+
+class SiboLinearVariant(LoraVariant):
+    """Variant for SIBO (Simple Booster for PEFT), https://arxiv.org/abs/2402.11896.
+
+    SIBO feeds a convex mix of the layer input and the model's initial token representation `h0` into LoRA's
+    low-rank branch: `h~ = (1 - lambda) * h + lambda * h0`. The initial residual is captured by a hook on the
+    input embedding layer and injected via the PEFT forward hooks (see `sibo.py`). Since the low-rank branch is
+    applied to the mixed input `h~` and not to `h`, the adapter cannot be folded into the base weights, so
+    merging is not supported (same restriction as aLoRA).
+    """
+
+    @staticmethod
+    def init(module: Linear, adapter_name: str, config: LoraConfig, **kwargs: Any) -> None:
+        if not hasattr(module, "lora_sibo_lambda"):
+            module.lora_sibo_lambda = {}
+        module.lora_sibo_lambda[adapter_name] = config.sibo_lambda
+
+    @staticmethod
+    def merge_safe(module: Linear, active_adapter: str, orig_weight: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError("SIBO does not support safe merging.")
+
+    @staticmethod
+    def merge_unsafe(module: Linear, active_adapter: str, orig_weight: torch.Tensor) -> None:
+        raise NotImplementedError("SIBO does not support merging.")
+
+    @staticmethod
+    def unmerge(module: Linear, active_adapter: str, orig_weight: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError("SIBO does not support unmerging.")
+
+    @staticmethod
+    def forward(
+        module: Linear,
+        active_adapter: str,
+        x: torch.Tensor,
+        result: torch.Tensor,
+        **kwargs,
+    ) -> torch.Tensor:
+        lora_A = module.lora_A[active_adapter]
+        lora_B = module.lora_B[active_adapter]
+        dropout = module.lora_dropout[active_adapter]
+        scaling = module.scaling[active_adapter]
+        x = x.to(lora_A.weight.dtype)
+
+        residual = kwargs.get("sibo_initial_residual", None)
+        if residual is not None and residual.dim() == x.dim() and residual.shape[-1] == x.shape[-1]:
+            x = mix_initial_residual(x, residual, module.lora_sibo_lambda[active_adapter])
+        else:
+            # e.g. when the model is called with inputs_embeds only, no residual could be captured
+            warnings.warn(
+                "SIBO initial residual is not available for this forward pass, falling back to the vanilla "
+                "LoRA branch input."
+            )
+
+        return result + lora_B(lora_A(dropout(x))) * scaling
