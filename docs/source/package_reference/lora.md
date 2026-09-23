@@ -126,6 +126,17 @@ MiCA currently supports `nn.Linear` and `nn.Embedding` target modules. The chose
 MiCA is primarily intended for continued pretraining / domain-adaptive pretraining. In that setting, use the base model, not an instruction- or chat-tuned checkpoint, for the SVD initialization and MiCA training. After training, merge the adapter into the base model weights and use the resulting adapted base model as the starting point for subsequent instruction/chat tuning.
 </hfoption>
 
+<hfoption id="NoRA">
+[NoRA](https://huggingface.co/papers/2608.31036) (Normalized Low-Rank Adaptation) builds on the observation that, since the up-projection B is initialized to zero, LoRA's early optimization dynamics are largely governed by the down-projection A. With `init_lora_weights="nora"`, A uses the default Kaiming-uniform initialization, after which each of its columns (along the rank dimension) is normalized to unit L2 norm; B stays zero, so the adapter remains an identity transform at step 0. This regularizes training dynamics, accelerates convergence, and improves stability without adding trainable parameters or inference-time cost.
+
+```python
+from peft import LoraConfig
+config = LoraConfig(init_lora_weights="nora", ...)
+```
+
+NoRA initialization currently applies to linear and convolutional layers; embedding layers fall back to the default initialization.
+</hfoption>
+
 <hfoption id="CorDA">
 [CorDA](https://huggingface.co/papers/2406.05223) builds task-aware LoRA adapters from weight decomposition oriented by the context of downstream task to learn (instruction-previewed mode, IPM) or world knowledge to maintain (knowledge-preserved mode, KPM).  The KPM not only achieves better performance than LoRA on fine-tuning tasks, but also mitigates the catastrophic forgetting of pre-trained world knowledge.  When preserving pre-trained knowledge is not a concern, the IPM is favored because it can further accelerate convergence and enhance the fine-tuning performance.
 
