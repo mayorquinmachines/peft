@@ -143,6 +143,12 @@ TEST_CASES = [
         {"target_modules": ["lin0"], "init_lora_weights": "mica", "r": 4},
     ),
     (
+        "Vanilla MLP 1 LoRA with NoRA",
+        "MLP",
+        LoraConfig,
+        {"target_modules": ["lin0"], "init_lora_weights": "nora"},
+    ),
+    (
         "Vanilla MLP 9 LoRA with DoRA",
         "MLP",
         LoraConfig,
