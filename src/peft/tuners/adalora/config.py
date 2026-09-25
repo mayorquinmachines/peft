@@ -54,6 +54,10 @@ class AdaLoraConfig(LoraConfig):
         orth_reg_weight (`float`): The coefficient of orthogonal regularization.
         total_step (`int`): The total training steps that should be specified before training.
         rank_pattern (`list`): The allocated rank for each weight matrix by RankAllocator.
+        importance_criterion (`str`): The criterion used by RankAllocator to score the importance of each rank triplet.
+            `"sensitivity"` (default) uses the sensitivity-based score of the original AdaLoRA paper. `"snr"` uses a
+            signal-to-noise ratio score (weight^2 / EMA of squared gradients), the Bayesian-motivated alternative from
+            https://arxiv.org/abs/2409.10673.
     """
 
     target_r: int = field(default=8, metadata={"help": "Target Lora matrix dimension."})
@@ -66,10 +70,19 @@ class AdaLoraConfig(LoraConfig):
     orth_reg_weight: float = field(default=0.5, metadata={"help": "The orthogonal regularization coefficient."})
     total_step: Optional[int] = field(default=None, metadata={"help": "The total training steps."})
     rank_pattern: Optional[dict] = field(default=None, metadata={"help": "The saved rank pattern."})
+    importance_criterion: str = field(
+        default="sensitivity",
+        metadata={"help": "Importance criterion for rank allocation, one of 'sensitivity' or 'snr'."},
+    )
 
     def __post_init__(self):
         super().__post_init__()
         self.peft_type = PeftType.ADALORA
+
+        if self.importance_criterion not in ("sensitivity", "snr"):
+            raise ValueError(
+                f"Unknown importance_criterion '{self.importance_criterion}', expected 'sensitivity' or 'snr'."
+            )
 
         if self.use_dora:
             raise ValueError(f"{self.peft_type} does not support DoRA.")

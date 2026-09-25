@@ -26,6 +26,7 @@ from peft.utils import transpose
 from peft.utils.integrations import _skip_init_on_device
 
 from .config import AdaLoraConfig
+from .snr import snr_importance_score, update_grad_sq_ema
 
 
 if packaging.version.parse(transformers.__version__) >= packaging.version.parse("4.33.0"):
@@ -362,6 +363,7 @@ class RankAllocator:
         self.adapter_name = adapter_name
         self.beta1 = peft_config.beta1
         self.beta2 = peft_config.beta2
+        self.importance_criterion = peft_config.importance_criterion
         assert self.beta1 > 0 and self.beta1 < 1
         assert self.beta2 > 0 and self.beta2 < 1
 
@@ -375,6 +377,7 @@ class RankAllocator:
         self.ipt = {}
         self.exp_avg_ipt = {}
         self.exp_avg_unc = {}
+        self.exp_avg_grad_sq = {}
 
     def _set_budget_scheduler(self, model):
         self.init_bgt = 0
@@ -414,22 +417,33 @@ class RankAllocator:
                     self.ipt[n] = torch.zeros_like(p)
                     self.exp_avg_ipt[n] = torch.zeros_like(p)
                     self.exp_avg_unc[n] = torch.zeros_like(p)
+                    if self.importance_criterion == "snr":
+                        self.exp_avg_grad_sq[n] = torch.zeros_like(p)
                 with torch.no_grad():
                     if deepspeed_config() is not None:
                         import deepspeed
 
                         grad = deepspeed.utils.safe_get_full_grad(p)
-                        self.ipt[n] = (p * grad).abs().detach()
                     else:
-                        self.ipt[n] = (p * p.grad).abs().detach()
+                        grad = p.grad
+                    if self.importance_criterion == "snr":
+                        # SNR-based importance: weight^2 / EMA of squared gradients
+                        update_grad_sq_ema(self.exp_avg_grad_sq[n], grad, self.beta2)
+                        self.ipt[n] = snr_importance_score(p, self.exp_avg_grad_sq[n])
+                    else:
+                        self.ipt[n] = (p * grad).abs().detach()
                     # Sensitivity smoothing
                     self.exp_avg_ipt[n] = self.beta1 * self.exp_avg_ipt[n] + (1 - self.beta1) * self.ipt[n]
-                    # Uncertainty quantification
-                    self.exp_avg_unc[n] = (
-                        self.beta2 * self.exp_avg_unc[n] + (1 - self.beta2) * (self.ipt[n] - self.exp_avg_ipt[n]).abs()
-                    )
+                    if self.importance_criterion == "sensitivity":
+                        # Uncertainty quantification
+                        self.exp_avg_unc[n] = (
+                            self.beta2 * self.exp_avg_unc[n]
+                            + (1 - self.beta2) * (self.ipt[n] - self.exp_avg_ipt[n]).abs()
+                        )
 
     def _element_score(self, n):
+        if self.importance_criterion == "snr":
+            return self.exp_avg_ipt[n]
         return self.exp_avg_ipt[n] * self.exp_avg_unc[n]
 
     def _combine_ipt(self, ipt_E, ipt_AB):
