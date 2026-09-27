@@ -485,6 +485,13 @@ def get_peft_model_state_dict(
                 if marker in key:
                     return key.replace(marker, f".{container}.")
 
+        if config.peft_type == PeftType.HYPERLORA:
+            # HyperLoRA stores the generator as ModuleDict[adapter] -> nn.Sequential, so the adapter name is not in
+            # the second-to-last position: keys look like `...hyperlora_generator.<adapter>.0.weight`.
+            marker = f".hyperlora_generator.{adapter_name}."
+            if marker in key:
+                return key.replace(marker, ".hyperlora_generator.")
+
         if key.endswith(f".{adapter_name}"):
             # comes from an nn.Parameter, so no .weight suffix, the adapter name is directly at the end
             return key.removesuffix(f".{adapter_name}")
