@@ -28,6 +28,7 @@ from .glora import GloraConfig, GloraModel
 from .gralora import GraloraConfig, GraloraModel
 from .hira import HiraConfig, HiraModel
 from .hra import HRAConfig, HRAModel
+from .hyperlora import HyperLoraConfig, HyperLoraModel
 from .ia3 import IA3Config, IA3Model
 from .lily import LilyConfig, LilyModel
 from .ln_tuning import LNTuningConfig, LNTuningModel
@@ -111,6 +112,8 @@ __all__ = [
     "HRAModel",
     "HiraConfig",
     "HiraModel",
+    "HyperLoraConfig",
+    "HyperLoraModel",
     "IA3Config",
     "IA3Model",
     "LNTuningConfig",
