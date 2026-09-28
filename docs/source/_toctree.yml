@@ -123,6 +123,8 @@
         title: PVeRA
       - local: package_reference/randlora
         title: RandLora
+      - local: package_reference/rlora
+        title: R-LoRA
       - local: package_reference/road
         title: RoAd
       - local: package_reference/shira
@@ -242,6 +244,8 @@
       title: Trainable Tokens
     - local: package_reference/randlora
       title: RandLora
+    - local: package_reference/rlora
+      title: R-LoRA
     - local: package_reference/road
       title: RoAd
     - local: package_reference/shira
