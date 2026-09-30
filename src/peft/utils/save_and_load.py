@@ -204,6 +204,18 @@ def get_peft_model_state_dict(
 
             to_return = {renamed_dora_weights(k): v for k, v in to_return.items()}
 
+    elif config.peft_type == PeftType.DEEPLORA:
+        # Deep LoRA stores the outer factors of the chain under LoRA's standard `lora_A`/`lora_B` names and the
+        # intermediate factors under `deeplora_factors`, which also contains "lora_" as a substring, so the LoRA
+        # key filter captures all adapter weights.
+        bias = config.bias
+        if bias == "none":
+            to_return = {k: state_dict[k] for k in state_dict if "lora_" in k}
+        elif bias == "all":
+            to_return = {k: state_dict[k] for k in state_dict if "lora_" in k or "bias" in k}
+        else:
+            raise NotImplementedError
+
     elif config.peft_type == PeftType.BOFT:
         bias = config.bias
         if bias == "none":
@@ -749,6 +761,10 @@ def set_peft_model_state_dict(
     elif config.peft_type in PEFT_TYPE_TO_PREFIX_MAPPING:
         peft_model_state_dict = {}
         parameter_prefix = PEFT_TYPE_TO_PREFIX_MAPPING[config.peft_type]
+        if config.peft_type == PeftType.DEEPLORA:
+            # Deep LoRA adapter weights live under both "lora_" (the outer `lora_A`/`lora_B` factors, named like
+            # LoRA) and "deeplora_factors" (the intermediate factors); "lora_" is a substring of both.
+            parameter_prefix = "lora_"
         if config.peft_type == PeftType.VBLORA and config.save_only_topk_weights:
             num_vectors, _ = model.vblora_vector_bank[adapter_name].shape
             state_dict_keys = list(state_dict.keys())

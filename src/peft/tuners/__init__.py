@@ -20,6 +20,7 @@ from .boft import BOFTConfig, BOFTModel
 from .c3a import C3AConfig, C3AModel
 from .cartridge import CartridgeConfig, CartridgeEncoder
 from .cpt import CPTConfig, CPTEmbedding
+from .deeplora import DeepLoraConfig, DeepLoraModel
 from .deft import DeftConfig, DeftModel
 from .delora import DeloraConfig, DeloraModel
 from .fourierft import FourierFTConfig, FourierFTModel
@@ -94,6 +95,8 @@ __all__ = [
     "CPTEmbedding",
     "CartridgeConfig",
     "CartridgeEncoder",
+    "DeepLoraConfig",
+    "DeepLoraModel",
     "DeftConfig",
     "DeftModel",
     "DeloraConfig",
