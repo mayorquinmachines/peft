@@ -31,3 +31,5 @@ PEFT provides several internal utilities for [merging LoRA adapters](../develope
 [[autodoc]] utils.merge_utils.dare_linear
 
 [[autodoc]] utils.merge_utils.dare_ties
+
+[[autodoc]] utils.projective_merge.projective_merge
