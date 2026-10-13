@@ -10,8 +10,8 @@ name: Outrider
 #   ZAI_API_KEY       — Z.ai backend key (when provider=zai)
 #   MOONSHOT_API_KEY  — Moonshot AI backend key (when provider=moonshot)
 #
-# Baked defaults (this repo's agent config): provider=moonshot
-# model=kimi-k3 — a workflow_dispatch can override
+# Baked defaults (this repo's agent config): provider=zai
+# model=glm-5.3 — a workflow_dispatch can override
 # both per run (that's how a two-tier refiner dispatches its promotions).
 
 on:
@@ -92,8 +92,8 @@ jobs:
           PROVIDER_INPUT: ${{ inputs.provider }}
           MODEL_INPUT: ${{ inputs.model }}
         run: |
-          PROVIDER="${PROVIDER_INPUT:-moonshot}"
-          MODEL="${MODEL_INPUT:-kimi-k3}"
+          PROVIDER="${PROVIDER_INPUT:-zai}"
+          MODEL="${MODEL_INPUT:-glm-5.3}"
           case "$PROVIDER" in
             zai)
               echo "ANTHROPIC_AUTH_TOKEN=$ZAI_API_KEY_SECRET" >> "$GITHUB_ENV"
