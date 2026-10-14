@@ -8,6 +8,12 @@ loop:
   fix_code: true
 benchmarks:
   - name: "kappa-lora-metamathqa"
+    # reviewer (user_guidance): `utils` is the repo's own module at method_comparison/MetaMathQA/utils.py, NOT a pip
+    # package. The PyPI `utils` package is removed from the environment (absent from packages: below) and the runner is
+    # executed with method_comparison/MetaMathQA as the working directory, so run.py's `import utils` resolves to the
+    # local utils.py first on sys.path. packages: installs ONLY the harness's own top-level third-party imports
+    # (utils.py does `import datasets` / `import bitsandbytes` unconditionally; peft's core install carries the rest).
+    packages: ["datasets", "bitsandbytes"]
     suite:
       harness:
         notebook: .remyx/validations/kappa-lora-metamathqa.ipynb
@@ -88,6 +94,7 @@ benchmarks:
       - "changing r, lora_alpha, target_modules, or any training param between the PR config and the compared LoRA row"
       - "substituting a synthetic CPU proxy for the MetaMathQA fit measurement"
       - "unpinned or swapped base-model revisions between runs"
+      - "installing the PyPI `utils` package: it would shadow the repo's own method_comparison/MetaMathQA/utils.py that run.py imports — the runner must execute with method_comparison/MetaMathQA as the working directory so the local module wins on sys.path"
     compute:
       tier: "gpu"
       # derivation: the published row's own total_time = 1173.7 s (train 958.3 s + eval/overhead ~215 s) on one GPU;
@@ -101,6 +108,7 @@ benchmarks:
       accelerator_memory_max: "published corpus:method_comparison/MetaMathQA/results/lora--llama-3.2-3B-rank32.json"
       forgetting: "published corpus:method_comparison/MetaMathQA/results/lora--llama-3.2-3B-rank32.json"
       suite: "repo_runner:method_comparison/MetaMathQA/run.py"
+      packages: "user_guidance"
       held_constant: "protocol_doc:method_comparison/README.md"
       baseline: "published corpus:method_comparison/MetaMathQA/results/lora--llama-3.2-3B-rank32.json"
       timeout_s: "published corpus runtimes"
