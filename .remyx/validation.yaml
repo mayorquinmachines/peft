@@ -20,9 +20,12 @@ benchmarks:
           overrides:
             max_steps: 4
             eval_steps: 2
-            batch_size: 1
-            batch_size_eval: 1
             max_seq_length: 256
+            # batch_size / batch_size_eval are deliberately NOT overridden: the preflight runs at the
+            # default_training_params.json batch sizes (reviewer: drop those overrides entirely) and is
+            # shortened instead by generation length and eval-sample count, as the preflight asks.
+            max_valid_size: 2
+            max_test_size: 2
             generation_kwargs:
               max_new_tokens: 8
       scorer: "num_trainable_params"
