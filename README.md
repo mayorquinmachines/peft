@@ -189,3 +189,15 @@ To use 🤗 PEFT in your publication, please cite it by using the following BibT
   year =         {2022}
 }
 ```
+
+## Ternary multiplicative adaptation
+
+This fork additionally provides `peft.tuners.ternary_adapt` (`TernaryAdaptConfig` / `TernaryAdaptModel`), a tuner for fine-tuning ternary transformers without dequantization, adapted from [Low-Rank Ternary Adaptation for Fine-Tuning Transformers](https://arxiv.org/abs/2608.24469v1). The base weight of each targeted layer is ternarized in-place at injection time (absmean quantization per output channel, analogous to how PEFT handles quantized bases for other methods), and a multiplicative ternary mask with a low-rank Kronecker structure — the Kronecker product of two small ternary factors trained with a straight-through estimator — is learned on top. The adapted weight is an element-wise product of ternary values, so it stays in the ternary domain and merges directly back into the base weight. The tuner registers itself on import and is then used through the regular `get_peft_model` API:
+
+```python
+from peft import get_peft_model
+from peft.tuners.ternary_adapt import TernaryAdaptConfig
+
+config = TernaryAdaptConfig(target_modules=["q_proj", "v_proj"])
+peft_model = get_peft_model(model, config)
+```
