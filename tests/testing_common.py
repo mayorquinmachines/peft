@@ -1546,6 +1546,15 @@ class PeftCommonTester:
             density=0.5,
         )
 
+        # test doge_svd re-weighting with multiple adapters
+        model.add_weighted_adapter(
+            adapter_list[1:],
+            weight_list[1:],
+            "multi_adapter_doge_svd_reweighting",
+            combination_type="doge_svd",
+            density=0.5,
+        )
+
         # test cat re-weighting with multiple adapters
         model.add_weighted_adapter(
             adapter_list[1:], weight_list[1:], "multi_adapter_cat_reweighting", combination_type="cat"

@@ -47,6 +47,7 @@ from peft.utils import (
 from peft.utils.integrations import TpInfo
 from peft.utils.merge_utils import dare_linear, dare_ties, magnitude_prune, task_arithmetic, ties
 from peft.utils.other import get_pattern_key
+from peft.utils.projective_merge import projective_merge
 
 from .aqlm import dispatch_aqlm
 from .awq import dispatch_awq
@@ -691,9 +692,11 @@ class LoraModel(BaseTuner):
                 Name of the new adapter.
             combination_type (`str`):
                 The merging type can be one of [`svd`, `linear`, `cat`, `ties`, `ties_svd`, `dare_ties`, `dare_linear`,
-                `dare_ties_svd`, `dare_linear_svd`, `magnitude_prune`, `magnitude_prune_svd`]. When using the `cat`
-                combination_type, the rank of the resulting adapter is equal to the sum of all adapters ranks (the
-                mixed adapter may be too big and result in OOM errors).
+                `dare_ties_svd`, `dare_linear_svd`, `magnitude_prune`, `magnitude_prune_svd`, `doge_svd`]. When using
+                the `cat` combination_type, the rank of the resulting adapter is equal to the sum of all adapters
+                ranks (the mixed adapter may be too big and result in OOM errors). The `doge_svd` combination type
+                merges the delta weights with adaptive projective gradient descent, where the `weights` act as the
+                global factor of the adaptive per-task coefficients.
             svd_rank (`int`, *optional*):
                 Rank of output adapter for svd. If None provided, will use max rank of merging adapters.
             svd_clamp (`float`, *optional*):
@@ -709,7 +712,7 @@ class LoraModel(BaseTuner):
             density (`float`, *optional*):
                 Value between 0 and 1. 0 means all values are pruned and 1 means no values are pruned. Should be used
                 with [`ties`, `ties_svd`, `dare_ties`, `dare_linear`, `dare_ties_svd`, `dare_linear_svd`,
-                `magnintude_prune`, `magnitude_prune_svd`]
+                `magnintude_prune`, `magnitude_prune_svd`, `doge_svd`]
             majority_sign_method (`str`):
                 The method, should be one of ["total", "frequency"], to use to get the magnitude of the sign values.
                 Should be used with [`ties`, `ties_svd`, `dare_ties`, `dare_ties_svd`]
@@ -778,6 +781,7 @@ class LoraModel(BaseTuner):
                     "dare_linear_svd",
                     "dare_ties_svd",
                     "magnitude_prune_svd",
+                    "doge_svd",
                 ]:
                     target_lora_A.data, target_lora_B.data = self._svd_generalized_task_arithmetic_weighted_adapter(
                         combination_type,
@@ -836,6 +840,8 @@ class LoraModel(BaseTuner):
             delta_weight = dare_ties(delta_weight, valid_weights, density, majority_sign_method)
         elif combination_type == "magnitude_prune_svd":
             delta_weight = magnitude_prune(delta_weight, valid_weights, density)
+        elif combination_type == "doge_svd":
+            delta_weight = projective_merge(delta_weight, valid_weights, density=density)
         else:
             raise ValueError(f"Invalid value passed to combination type: {combination_type}")
 
