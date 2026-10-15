@@ -46,6 +46,7 @@ from peft.utils import (
 )
 from peft.utils.integrations import TpInfo
 from peft.utils.merge_utils import dare_linear, dare_ties, magnitude_prune, task_arithmetic, ties
+from peft.utils.orthogonal_merge import orthogonal_subspace_merge
 from peft.utils.other import get_pattern_key
 
 from .aqlm import dispatch_aqlm
@@ -691,9 +692,12 @@ class LoraModel(BaseTuner):
                 Name of the new adapter.
             combination_type (`str`):
                 The merging type can be one of [`svd`, `linear`, `cat`, `ties`, `ties_svd`, `dare_ties`, `dare_linear`,
-                `dare_ties_svd`, `dare_linear_svd`, `magnitude_prune`, `magnitude_prune_svd`]. When using the `cat`
-                combination_type, the rank of the resulting adapter is equal to the sum of all adapters ranks (the
-                mixed adapter may be too big and result in OOM errors).
+                `dare_ties_svd`, `dare_linear_svd`, `magnitude_prune`, `magnitude_prune_svd`, `orthogonal_svd`]. When
+                using the `cat` combination_type, the rank of the resulting adapter is equal to the sum of all
+                adapters ranks (the mixed adapter may be too big and result in OOM errors). The `orthogonal_svd`
+                combination_type projects each adapter's delta weight onto the orthogonal complement of the other
+                adapters' subspaces before merging, reducing cross-task interference
+                (see https://arxiv.org/abs/2505.22934).
             svd_rank (`int`, *optional*):
                 Rank of output adapter for svd. If None provided, will use max rank of merging adapters.
             svd_clamp (`float`, *optional*):
@@ -778,6 +782,7 @@ class LoraModel(BaseTuner):
                     "dare_linear_svd",
                     "dare_ties_svd",
                     "magnitude_prune_svd",
+                    "orthogonal_svd",
                 ]:
                     target_lora_A.data, target_lora_B.data = self._svd_generalized_task_arithmetic_weighted_adapter(
                         combination_type,
@@ -836,6 +841,8 @@ class LoraModel(BaseTuner):
             delta_weight = dare_ties(delta_weight, valid_weights, density, majority_sign_method)
         elif combination_type == "magnitude_prune_svd":
             delta_weight = magnitude_prune(delta_weight, valid_weights, density)
+        elif combination_type == "orthogonal_svd":
+            delta_weight = orthogonal_subspace_merge(delta_weight, valid_weights)
         else:
             raise ValueError(f"Invalid value passed to combination type: {combination_type}")
 
