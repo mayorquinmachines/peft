@@ -64,6 +64,7 @@ from .prompt_tuning import PromptEmbedding, PromptTuningConfig, PromptTuningInit
 from .psoft import PsoftConfig, PsoftModel
 from .pvera import PveraConfig, PveraModel
 from .randlora import RandLoraConfig, RandLoraModel
+from .rlora import RLoraConfig, RLoraModel
 from .road import RoadConfig, RoadModel
 from .shira import ShiraConfig, ShiraModel
 from .tinylora import TinyLoraConfig, TinyLoraModel
@@ -153,6 +154,8 @@ __all__ = [
     "PsoftModel",
     "PveraConfig",
     "PveraModel",
+    "RLoraConfig",
+    "RLoraModel",
     "RandLoraConfig",
     "RandLoraModel",
     "RoadConfig",
