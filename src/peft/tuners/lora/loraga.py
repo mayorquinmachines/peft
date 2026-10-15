@@ -71,6 +71,10 @@ def preprocess_loraga(
     Upon completion, the following fields are set for each target module:
         _peft_loraga_grad (`torch.Tensor`):
             Accumulated gradient for the weight matrix.
+        _peft_loraga_grad_left_cov / _peft_loraga_grad_right_cov (`torch.Tensor`, only when
+        `lora_config.lora_ga_config.n_steps > 1`):
+            Gradient second moments (in canonical `(out_features, in_features)` orientation) accumulated across the
+            `n_steps` probes, used by LoRA-GA² multi-step initialization and spectrum-aware rank allocation.
     """
     if lora_config.lora_ga_config is None:
         raise ValueError(
@@ -101,6 +105,10 @@ def preprocess_loraga(
         cache = torch.load(cache_file, map_location=get_model_device(model))
         for name, module in get_target_modules(model, lora_config):
             module._peft_loraga_grad = cache[f"{name}._peft_loraga_grad"]
+            left_cov_key = f"{name}._peft_loraga_grad_left_cov"
+            if left_cov_key in cache:
+                module._peft_loraga_grad_left_cov = cache[left_cov_key]
+                module._peft_loraga_grad_right_cov = cache[f"{name}._peft_loraga_grad_right_cov"]
     else:
         # Estimate gradients by running train_step
         estimate_gradients(model, lora_config, train_step)
@@ -110,6 +118,9 @@ def preprocess_loraga(
             cache: dict[str, Any] = {}
             for name, module in get_target_modules(model, lora_config):
                 cache[f"{name}._peft_loraga_grad"] = module._peft_loraga_grad
+                if hasattr(module, "_peft_loraga_grad_left_cov"):
+                    cache[f"{name}._peft_loraga_grad_left_cov"] = module._peft_loraga_grad_left_cov
+                    cache[f"{name}._peft_loraga_grad_right_cov"] = module._peft_loraga_grad_right_cov
 
             os.makedirs(os.path.dirname(cache_file), exist_ok=True)
             torch.save(cache, cache_file)
@@ -125,7 +136,17 @@ def estimate_gradients(
 
     This function enables gradient computation ONLY on target module weights and runs the train_step callback. This is
     more memory-efficient than enabling gradients globally.
+
+    When `lora_config.lora_ga_config.n_steps > 1`, the callback is run once per probe step and gradient second moments
+    are accumulated across steps (the LoRA-GA² multi-step gradient probe). Gradients are cleared between steps so that
+    each probe captures a distinct snapshot of the gradient trajectory. With `n_steps == 1` (default) this reduces to
+    the standard single-probe LoRA-GA estimation.
     """
+    lora_ga_config = lora_config.lora_ga_config
+    n_steps = lora_ga_config.n_steps if lora_ga_config is not None else 1
+    if n_steps < 1:
+        raise ValueError(f"lora_ga_config.n_steps must be a positive integer, got {n_steps}.")
+
     # Remember original training state
     was_training = model.training
     model.train()
@@ -166,9 +187,39 @@ def estimate_gradients(
         hook = module.register_full_backward_hook(backward_hook)
         hooks.append(hook)
 
-    # Enable gradient computation and run train_step
+    # Enable gradient computation and run train_step once per probe step
     with torch.enable_grad():
-        train_step()
+        for _ in range(n_steps):
+            counts_before = {name: module._peft_loraga_grad_count for name, module in target_module_list}
+            train_step()
+            for name, module in target_module_list:
+                step_count = module._peft_loraga_grad_count - counts_before[name]
+                grad = module.weight.grad
+                if step_count == 0 or grad is None:
+                    continue
+                grad = grad.detach()
+                # Running sum for the mean gradient; divided by the total count below, which
+                # reproduces the single-probe estimate exactly when n_steps == 1.
+                module._peft_loraga_grad_sum = grad + getattr(module, "_peft_loraga_grad_sum", 0)
+                if n_steps > 1:
+                    # LoRA-GA² multi-step probe: accumulate second moments of the per-step average
+                    # gradient in canonical (out_features, in_features) orientation.
+                    g = grad.to(torch.float32) / step_count
+                    if isinstance(module, Conv1D):
+                        g = g.t()
+                    if not hasattr(module, "_peft_loraga_grad_left_cov"):
+                        module._peft_loraga_grad_left_cov = torch.zeros(
+                            g.shape[0], g.shape[0], dtype=torch.float32, device=g.device
+                        )
+                        module._peft_loraga_grad_right_cov = torch.zeros(
+                            g.shape[1], g.shape[1], dtype=torch.float32, device=g.device
+                        )
+                        module._peft_loraga_grad_steps = 0
+                    module._peft_loraga_grad_left_cov += g @ g.t()
+                    module._peft_loraga_grad_right_cov += g.t() @ g
+                    module._peft_loraga_grad_steps += 1
+                # Clear gradients so that the next probe captures a fresh snapshot
+                module.weight.grad = None
 
     # Remove hooks
     for hook in hooks:
@@ -182,10 +233,61 @@ def estimate_gradients(
     # Average gradients and clean up temporary fields
     for name, module in target_module_list:
         if module._peft_loraga_grad_count > 0:
-            module._peft_loraga_grad = module.weight.grad.detach() / module._peft_loraga_grad_count
+            module._peft_loraga_grad = module._peft_loraga_grad_sum / module._peft_loraga_grad_count
+            del module._peft_loraga_grad_sum
         module.weight.grad = None
         del module._peft_loraga_grad_count
+        if hasattr(module, "_peft_loraga_grad_steps"):
+            module._peft_loraga_grad_left_cov /= module._peft_loraga_grad_steps
+            module._peft_loraga_grad_right_cov /= module._peft_loraga_grad_steps
+            del module._peft_loraga_grad_steps
 
     # Restore original training state
     if not was_training:
         model.eval()
+
+
+def get_spectrum_aware_rank_pattern(model: nn.Module, lora_config: LoraConfig, min_rank: int = 1) -> dict[str, int]:
+    """
+    Allocate per-layer LoRA ranks from the multi-step gradient spectrum (LoRA-GA²).
+
+    Uses the gradient second moments attached by `preprocess_loraga` when run with
+    `lora_config.lora_ga_config.n_steps > 1`. Each layer's importance is the spectral mass of its multi-step gradients
+    (the trace of its gradient second moment, i.e. the mean squared Frobenius norm of the per-step gradients), and
+    ranks are assigned proportionally to importance while preserving the average rank `lora_config.r` across target
+    layers. Ranks are clipped to `[min_rank, min(out_features, in_features)]` per layer.
+
+    Args:
+        model (`nn.Module`):
+            Model that was preprocessed with `preprocess_loraga` using `LoraGAConfig(n_steps>1)`.
+        lora_config (`LoraConfig`):
+            Lora configuration of the model. The average rank is taken from `lora_config.r`.
+        min_rank (`int`):
+            Minimum rank assigned to any target layer. Default: 1.
+
+    Returns:
+        `dict[str, int]`: Mapping from module name to rank, suitable for `LoraConfig.rank_pattern`.
+    """
+    importances: dict[str, float] = {}
+    max_ranks: dict[str, int] = {}
+    for name, module in get_target_modules(model, lora_config):
+        if not hasattr(module, "_peft_loraga_grad_left_cov"):
+            raise ValueError(
+                f"Multi-step gradient statistics not found on module '{name}'. "
+                "Spectrum-aware rank allocation requires running preprocess_loraga with "
+                "LoraGAConfig(n_steps>1) first."
+            )
+        left_cov = module._peft_loraga_grad_left_cov
+        importances[name] = left_cov.diagonal().sum().item()
+        max_ranks[name] = min(left_cov.shape[0], module._peft_loraga_grad_right_cov.shape[0])
+
+    total_importance = sum(importances.values())
+    n_layers = len(importances)
+    rank_pattern: dict[str, int] = {}
+    for name, importance in importances.items():
+        if total_importance > 0:
+            rank = round(lora_config.r * n_layers * importance / total_importance)
+        else:
+            rank = lora_config.r
+        rank_pattern[name] = int(max(min_rank, min(max_ranks[name], rank)))
+    return rank_pattern

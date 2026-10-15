@@ -654,12 +654,25 @@ class LoraLayer(BaseTunerLayer):
 
         r = self.r[adapter_name]
 
-        # torch.svd_lowrank returns (U, S, V) where grad ≈ U @ diag(S) @ V.T
-        # So V is shape (in_features, k) and we need V.T which is (k, in_features) for lora_A
-        U, S, V = torch.svd_lowrank(grad, q=min(4 * r, min(grad.shape)), niter=4)
+        if hasattr(base_layer, "_peft_loraga_grad_left_cov"):
+            # LoRA-GA² multi-step initialization: principal directions come from the eigendecomposition
+            # of the gradient second moments accumulated across probe steps, rather than an SVD of the
+            # mean gradient (in which per-step directions can cancel out).
+            left_cov = base_layer._peft_loraga_grad_left_cov.to(torch.float32)
+            right_cov = base_layer._peft_loraga_grad_right_cov.to(torch.float32)
+            eigvals_left, eigvecs_left = torch.linalg.eigh(left_cov)
+            _, eigvecs_right = torch.linalg.eigh(right_cov)
+            # eigh returns ascending eigenvalues; flip to descending singular order
+            U = eigvecs_left.flip(1)
+            S = eigvals_left.flip(0).clamp_min(0).sqrt()
+            Vh = eigvecs_right.flip(1).t()
+        else:
+            # torch.svd_lowrank returns (U, S, V) where grad ≈ U @ diag(S) @ V.T
+            # So V is shape (in_features, k) and we need V.T which is (k, in_features) for lora_A
+            U, S, V = torch.svd_lowrank(grad, q=min(4 * r, min(grad.shape)), niter=4)
 
-        # V is (in_features, k), we need Vh = V.T which is (k, in_features)
-        Vh = V.t()
+            # V is (in_features, k), we need Vh = V.T which is (k, in_features)
+            Vh = V.t()
 
         U = U[:, : 2 * r]
         S = S[: 2 * r]
@@ -729,6 +742,9 @@ class LoraLayer(BaseTunerLayer):
 
         # Remove redundant fields
         del base_layer._peft_loraga_grad
+        if hasattr(base_layer, "_peft_loraga_grad_left_cov"):
+            del base_layer._peft_loraga_grad_left_cov
+            del base_layer._peft_loraga_grad_right_cov
 
     def _cache_store(self, key: str, value: Any) -> None:
         # cache intermediate values, e.g. weight norm of DoRA
