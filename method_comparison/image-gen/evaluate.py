@@ -35,8 +35,10 @@ import os
 import sys
 import time
 from collections.abc import Callable
+from typing import Optional
 
 import torch
+from prompt_fidelity import get_judge_fn
 from run import evaluate, generate_sample_images, measure_drift
 from transformers import set_seed
 from utils import (
@@ -73,6 +75,7 @@ def evaluate_checkpoint(
     pipeline,
     train_config: TrainConfig,
     print_verbose: Callable[..., None],
+    judge_fn: Optional[Callable] = None,
 ) -> TrainResult:
     metrics = []
     device_type = infer_device()
@@ -100,6 +103,7 @@ def evaluate_checkpoint(
     torch_accelerator_module.empty_cache()
     try:
         print_verbose("Evaluation on test set follows.")
+        tier2_log = []
         test_similarity = evaluate(
             pipeline=pipeline,
             ds_eval=test_dataset,
@@ -107,16 +111,21 @@ def evaluate_checkpoint(
             dino_model=dino_model,
             config=train_config,
             num_repeats=3,
+            judge_fn=judge_fn,
+            tier2_log=tier2_log,
         )
         print_verbose("Calculating drift.")
         test_drift = measure_drift(pipeline=pipeline, processor=processor, dino_model=dino_model, config=train_config)
-        metrics.append(
-            {
-                "test dino_similarity": test_similarity,
-                "drift": test_drift,
-                "eval time": time.perf_counter() - tic_eval_total,
-            }
-        )
+        metrics_entry = {
+            "test dino_similarity": test_similarity,
+            "drift": test_drift,
+            "eval time": time.perf_counter() - tic_eval_total,
+        }
+        if tier2_log:
+            # Tier 2 (judge-model prompt fidelity, see prompt_fidelity.py) complements the deterministic Tier 1
+            metrics_entry["test prompt_fidelity"] = sum(scores["fidelity"] for scores in tier2_log) / len(tier2_log)
+            print_verbose(f"Test prompt fidelity:   {metrics_entry['test prompt_fidelity']:.4f}")
+        metrics.append(metrics_entry)
         print_verbose(f"Test DINOv2 similarity: {test_similarity:.4f}")
         print_verbose(f"Test drift:             {test_drift:.4f}")
 
@@ -150,11 +159,16 @@ def evaluate_checkpoint(
     return eval_result
 
 
-def main(*, path_checkpoint: str, experiment_name: str) -> None:
+def main(*, path_checkpoint: str, experiment_name: str, judge_model_id: Optional[str] = None) -> None:
     tic_total = time.perf_counter()
     start_date = dt.datetime.now(tz=dt.timezone.utc).replace(microsecond=0).isoformat()
 
     print_verbose("===== The results of this evaluation run are stored as temporary results ======")
+
+    judge_fn = None
+    if judge_model_id is not None:
+        print_verbose(f"Loading prompt-fidelity judge model: {judge_model_id}")
+        judge_fn = get_judge_fn(model_id=judge_model_id)
 
     if not os.path.exists(os.path.join(path_checkpoint, CONFIG_NAME)):
         raise FileNotFoundError(
@@ -198,6 +212,7 @@ def main(*, path_checkpoint: str, experiment_name: str) -> None:
         pipeline=pipeline,
         train_config=train_config,
         print_verbose=print_verbose,
+        judge_fn=judge_fn,
     )
 
     file_size = get_file_size(pipeline.transformer, peft_config=peft_config, clean=True, print_fn=print_verbose)
@@ -238,6 +253,15 @@ if __name__ == "__main__":
     parser.add_argument(
         "path_checkpoint", type=str, help="Path to the directory containing the trained PEFT checkpoint"
     )
+    parser.add_argument(
+        "--prompt-fidelity-judge",
+        type=str,
+        default=None,
+        metavar="MODEL_ID",
+        help="Optionally score prompt fidelity of the test generations with this judge model (Tier 2, semantic "
+        "quality), complementing the deterministic DINOv2 similarity. Pass an instruction-tuned vision-language "
+        "model id; the scores are logged as 'test prompt_fidelity'.",
+    )
     args = parser.parse_args()
 
     experiment_name = get_experiment_name(args.path_checkpoint)
@@ -252,4 +276,8 @@ if __name__ == "__main__":
         def print_verbose(*args, **kwargs) -> None:
             pass
 
-    main(path_checkpoint=args.path_checkpoint, experiment_name=experiment_name)
+    main(
+        path_checkpoint=args.path_checkpoint,
+        experiment_name=experiment_name,
+        judge_model_id=args.prompt_fidelity_judge,
+    )
