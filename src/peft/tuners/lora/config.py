@@ -481,6 +481,16 @@ class LoraConfig(PeftConfig):
             ranks. Right now, DoRA only supports linear and Conv2D layers. DoRA introduces a bigger overhead than pure
             LoRA, so it is recommended to merge weights for inference. For more information, see
             https://huggingface.co/papers/2402.09353.
+        use_sibo (`bool`):
+            Enable <a href='https://huggingface.co/papers/2402.11896'>'SIBO' (Simple Booster for PEFT)</a>. SIBO
+            counteracts over-smoothing by feeding a convex mix of the layer input and the model's initial token
+            representation (the output of the input embedding layer) into LoRA's low-rank branch, while leaving
+            the frozen base path untouched. It introduces no additional trainable parameters. Right now, SIBO
+            only supports linear layers, requires the base model to expose its input embedding layer via
+            `get_input_embeddings()`, and does not support merging.
+        sibo_lambda (`float`):
+            Mixing coefficient for SIBO, controlling how strongly the initial token representation is blended
+            into the low-rank branch input. Must be strictly between 0 and 1. Only used when `use_sibo=True`.
         velora_config (`Optional[VeloraConfig]`):
             Enable VeLoRA by providing a VeloraConfig. VeLoRA swaps in a custom backward pass for the LoRA A projection
             that stores compressed activations instead of the full input activations.
@@ -758,6 +768,27 @@ class LoraConfig(PeftConfig):
             "is_lora_variant": True,
         },
     )
+    use_sibo: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Enable <a href='https://huggingface.co/papers/2402.11896'>'SIBO' (Simple Booster for PEFT)</a>. "
+                "SIBO counteracts over-smoothing by feeding a convex mix of the layer input and the model's initial "
+                "token representation into LoRA's low-rank branch, while leaving the frozen base path untouched. "
+                "Right now, SIBO only supports linear layers."
+            ),
+            "is_lora_variant": True,
+        },
+    )
+    sibo_lambda: float = field(
+        default=0.2,
+        metadata={
+            "help": (
+                "Mixing coefficient for SIBO, controlling how strongly the initial token representation is blended "
+                "into the low-rank branch input. Must be strictly between 0 and 1. Only used when `use_sibo=True`."
+            )
+        },
+    )
     velora_config: Optional[Union[VeloraConfig, dict]] = field(
         default=None,
         metadata={
@@ -947,6 +978,9 @@ class LoraConfig(PeftConfig):
 
         if self.use_dora and self.megatron_config:
             raise ValueError("DoRA does not support megatron_core, please set `use_dora=False`.")
+
+        if self.use_sibo and not 0.0 < self.sibo_lambda < 1.0:
+            raise ValueError(f"`sibo_lambda` must be strictly between 0 and 1, got {self.sibo_lambda} instead.")
 
         # handle init_lora_weights and loftq_config
         if self.init_lora_weights == "loftq":

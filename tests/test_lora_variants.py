@@ -32,6 +32,7 @@ from peft.tuners.lora.variants import (
     DoraConv2dVariant,
     DoraEmbeddingVariant,
     DoraLinearVariant,
+    SiboLinearVariant,
     calculate_alora_offsets,
     get_alora_offsets_for_forward,
     get_alora_offsets_for_generate,
@@ -116,6 +117,9 @@ VARIANT_MAP = {
     "alora": {
         LoraLinear: ALoraLinearVariant,
     },
+    "sibo": {
+        LoraLinear: SiboLinearVariant,
+    },
 }
 
 
@@ -129,6 +133,11 @@ TEST_CASES = [
         "alora",
         LoraConfig,
         {"target_modules": ["linear1", "linear2"], "alora_invocation_tokens": [1]},
+    ),
+    (
+        "sibo",
+        LoraConfig,
+        {"target_modules": ["linear1", "linear2"], "use_sibo": True},
     ),
 ]
 
@@ -400,3 +409,94 @@ class TestActivatedLora:
                 lora_model.forward(**inputs)
 
             lora_model.forward(**inputs)
+
+
+# Used for testing SIBO: a tiny LM whose input embedding layer feeds two stacked linear layers, so that the
+# input to the second (targeted) linear layer differs from the model's initial token representation.
+class DummySiboLM(nn.Module):
+    def __init__(self, vocab_size: int = 10, hidden_dim: int = 8):
+        super().__init__()
+        self.embed = nn.Embedding(vocab_size, hidden_dim)
+        self.linear1 = nn.Linear(hidden_dim, hidden_dim)
+        self.linear2 = nn.Linear(hidden_dim, vocab_size)
+
+    def get_input_embeddings(self):
+        return self.embed
+
+    def forward(self, input_ids=None, **kwargs):
+        h = self.embed(input_ids)
+        return self.linear2(torch.relu(self.linear1(h)))
+
+
+class TestSiboVariant:
+    def get_peft_model_with_sibo(self, sibo_lambda=0.3):
+        torch.manual_seed(0)
+        base_model = DummySiboLM()
+        cfg = LoraConfig(
+            target_modules=["linear2"],
+            use_sibo=True,
+            sibo_lambda=sibo_lambda,
+            init_lora_weights=False,  # non-zero lora_B so the adapter affects the output
+            r=4,
+            lora_alpha=8,
+        )
+        peft_model = get_peft_model(base_model, cfg)
+        peft_model.eval()
+        return base_model, peft_model
+
+    def test_sibo_forward_matches_manual_mix(self):
+        # The initial residual (the embedding output h0) must be captured by the forward hooks and mixed into
+        # the low-rank branch input: h~ = (1 - lambda) * h + lambda * h0.
+        sibo_lambda = 0.3
+        base_model, peft_model = self.get_peft_model_with_sibo(sibo_lambda=sibo_lambda)
+        lora_layer = peft_model.base_model.model.linear2
+        input_ids = torch.tensor([[0, 1, 2, 3]])
+
+        with torch.no_grad():
+            h0 = base_model.embed(input_ids)
+            x = torch.relu(base_model.linear1(h0))
+            base_out = lora_layer.base_layer(x)
+            lora_A = lora_layer.lora_A["default"]
+            lora_B = lora_layer.lora_B["default"]
+            scaling = lora_layer.scaling["default"]
+
+            mixed = (1 - sibo_lambda) * x + sibo_lambda * h0
+            expected = base_out + lora_B(lora_A(mixed)) * scaling
+            vanilla = base_out + lora_B(lora_A(x)) * scaling
+            actual = peft_model(input_ids=input_ids)
+
+        assert torch.allclose(actual, expected, atol=1e-6)
+        # sanity check: the initial residual actually changes the output compared to vanilla LoRA
+        assert not torch.allclose(actual, vanilla, atol=1e-6)
+
+    def test_sibo_merge_raises(self):
+        # The low-rank branch is applied to the mixed input and not to the layer input, so the adapter cannot be
+        # folded into the base weights (same restriction as aLoRA).
+        _, peft_model = self.get_peft_model_with_sibo()
+        with pytest.raises(NotImplementedError, match="SIBO does not support merging."):
+            peft_model.merge_adapter()
+
+    def test_sibo_variant_forward_with_kv_cache_shapes(self):
+        # During cached generation, the layer input only holds the new tokens while the captured residual
+        # covers the full sequence; the variant must align the two before mixing.
+        config = LoraConfig(use_sibo=True, sibo_lambda=0.5, init_lora_weights=False, r=4, lora_alpha=4)
+        base_layer = nn.Linear(8, 8)
+        layer = LoraLinear(base_layer, "default", config, r=4, lora_alpha=4)
+        layer.eval()
+
+        x = torch.randn(2, 1, 8)  # single newly processed token
+        h0 = torch.randn(2, 5, 8)  # residual captured for the full sequence
+        with torch.no_grad():
+            actual = layer(x, sibo_initial_residual=h0)
+            lora_A = layer.lora_A["default"]
+            lora_B = layer.lora_B["default"]
+            mixed = 0.5 * x + 0.5 * h0[:, -1:]
+            expected = base_layer(x) + lora_B(lora_A(mixed)) * layer.scaling["default"]
+
+        assert torch.allclose(actual, expected, atol=1e-6)
+
+    def test_sibo_lambda_must_be_between_0_and_1(self):
+        with pytest.raises(ValueError, match="`sibo_lambda` must be strictly between 0 and 1"):
+            LoraConfig(use_sibo=True, sibo_lambda=1.5)
+        with pytest.raises(ValueError, match="`sibo_lambda` must be strictly between 0 and 1"):
+            LoraConfig(use_sibo=True, sibo_lambda=0.0)

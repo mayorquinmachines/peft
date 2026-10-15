@@ -56,6 +56,7 @@ from .gptq import dispatch_gptq
 from .hqq import dispatch_hqq
 from .inc import dispatch_inc
 from .layer import Conv2d, LoraLayer, ParamWrapper, dispatch_default
+from .sibo import make_residual_capture_hook, make_residual_injection_hook
 from .te import dispatch_transformer_engine
 from .torchao import dispatch_torchao
 from .tp_layer import dispatch_megatron
@@ -446,12 +447,33 @@ class LoraModel(BaseTuner):
         # If adapter_names is passed as an argument, we inject it into the forward arguments.
         adapter_names = kwargs.pop("adapter_names", None)
         alora_offsets = kwargs.pop("alora_offsets", None)
+        sibo_enabled = any(getattr(config, "use_sibo", False) for config in self.peft_config.values())
 
-        if adapter_names is None and alora_offsets is None:
+        if adapter_names is None and alora_offsets is None and not sibo_enabled:
             # nothing to do
             yield
             return
         hook_handles = []
+
+        if sibo_enabled:
+            # SIBO needs the model's initial token representation (h0) in every LoRA layer. Capture the output
+            # of the input embedding layer on each forward pass and inject it into the LoRA layers' kwargs. As
+            # the embedding layer is re-invoked on every forward call, h0 also tracks the current tokens during
+            # cached generation.
+            embedding_layer = getattr(self.model, "get_input_embeddings", lambda: None)()
+            if embedding_layer is None:
+                raise ValueError(
+                    "`use_sibo=True` requires the base model to expose its input embedding layer via "
+                    "`get_input_embeddings()`."
+                )
+            sibo_state: dict = {}
+            hook_handles.append(embedding_layer.register_forward_hook(make_residual_capture_hook(sibo_state)))
+            for module in self.modules():
+                if isinstance(module, LoraLayer):
+                    handle = module.register_forward_pre_hook(
+                        make_residual_injection_hook(sibo_state), with_kwargs=True
+                    )
+                    hook_handles.append(handle)
 
         if alora_offsets is not None:
             # TODO: remove once transformers 4.52 is no longer supported. Note that 4.52.0 is yanked, so 4.52.1
