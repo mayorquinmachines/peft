@@ -484,7 +484,38 @@ For users, this means:
 
 ## Optimizers
 
-LoRA training can optionally include special purpose optimizers. Currently PEFT supports LoRA-FA and LoRA+.
+LoRA training can optionally include special purpose optimizers. Currently PEFT supports LoRA-FA, LoRA+, and LoRA-TSD.
+
+### LoRA-TSD Optimizer
+
+LoRA training can be improved using LoRA-TSD, as described in [LoRA-TSD: Tangent-Space Spectral Descent for LoRA via Muon-Style Updates](https://huggingface.co/papers/2609.02734). LoRA-TSD treats every LoRA step as a tangent vector of the fixed-rank matrix manifold and takes the spectral-norm steepest-descent step of Muon inside that tangent space, mapping the result back to the factors A and B through a retraction native to the LoRA parametrization. The step avoids expensive operations on full weight matrices and is reported to be robust to the adapter rank. Since the update is spectrally normalized, `lr` plays the role of a spectral-norm step size (as in Muon) rather than an AdamW learning rate.
+
+```py
+from peft import LoraConfig, get_peft_model
+from peft.optimizers import create_lora_tsd_optimizer
+from transformers import Trainer, get_cosine_schedule_with_warmup
+
+base_model = AutoModelForCausalLM.from_pretrained("meta-llama/Meta-Llama-3-8B-Instruct")
+
+config = LoraConfig(...)
+model = get_peft_model(base_model, config)
+
+optimizer = create_lora_tsd_optimizer(
+    model=model,
+    lr=1e-2,
+)
+
+scheduler = get_cosine_schedule_with_warmup(
+    optimizer,
+    num_warmup_steps=100,
+    num_training_steps=1000,
+)
+
+trainer = Trainer(
+    ...,
+    optimizers=(optimizer, scheduler),
+)
+```
 
 ### LoRA-FA Optimizer
 
