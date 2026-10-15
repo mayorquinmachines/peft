@@ -189,3 +189,23 @@ To use 🤗 PEFT in your publication, please cite it by using the following BibT
   year =         {2022}
 }
 ```
+
+## MoSLoRA (Mixture-of-Subspaces LoRA)
+
+MoSLoRA ([paper](https://huggingface.co/papers/2406.11909)) extends LoRA with a learnable `r x r` mixer matrix between the LoRA `A` and `B` matrices, so the weight update is `ΔW = B·M·A` instead of `ΔW = B·A`. Vanilla LoRA is the special case with the mixer fixed to the identity. The tuner lives in `peft.tuners.moslora` and reuses the LoRA machinery, supporting the usual `get_peft_model`, merge/unmerge, and save/load workflows:
+
+```python
+import torch
+from peft import get_peft_model
+from peft.tuners.moslora import MosLoraConfig
+
+config = MosLoraConfig(
+    r=16,
+    lora_alpha=32,
+    target_modules=["q_proj", "v_proj"],
+    mixer_init="kaiming",  # one of "kaiming", "orthogonal", "identity", "butterfly"
+)
+model = get_peft_model(base_model, config)
+```
+
+Set `trainable_mixer=False` to keep the mixer fixed at its initialization (e.g. `mixer_init="butterfly"` for the paper's fixed-mixer variant). Note: to load a saved MoSLoRA adapter with `PeftModel.from_pretrained` or `AutoPeftModel`, import `peft.tuners.moslora` first so the `MOSLORA` peft type is registered.
