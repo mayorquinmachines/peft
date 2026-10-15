@@ -45,7 +45,7 @@ from peft.utils import (
     get_quantization_config,
 )
 from peft.utils.integrations import TpInfo
-from peft.utils.merge_utils import dare_linear, dare_ties, magnitude_prune, task_arithmetic, ties
+from peft.utils.merge_utils import breadcrumbs, dare_linear, dare_ties, magnitude_prune, task_arithmetic, ties
 from peft.utils.other import get_pattern_key
 
 from .aqlm import dispatch_aqlm
@@ -623,12 +623,12 @@ class LoraModel(BaseTuner):
             for config in (self.peft_config[adapter] for adapter in adapters)
         ]
 
-        if combination_type in ("linear", "ties", "dare_ties", "dare_linear", "magnitude_prune"):
+        if combination_type in ("linear", "ties", "dare_ties", "dare_linear", "magnitude_prune", "breadcrumbs"):
             # all adapters ranks should be same, new rank is just this value
             if len(set(adapters_ranks)) != 1:
                 raise ValueError(
-                    "All adapters must have the same r value when using combination_type linear, ties, dare_ties or "
-                    "dare_linear."
+                    "All adapters must have the same r value when using combination_type linear, ties, dare_ties, "
+                    "dare_linear, magnitude_prune or breadcrumbs."
                 )
             new_rank = adapters_ranks[0]
         elif combination_type == "cat":
@@ -673,6 +673,7 @@ class LoraModel(BaseTuner):
         svd_driver: str | None = None,
         density: float | None = None,
         majority_sign_method: Literal["total", "frequency"] = "total",
+        gamma: float | None = None,
     ) -> None:
         """
         This method adds a new adapter by merging the given adapters with the given weights.
@@ -691,9 +692,9 @@ class LoraModel(BaseTuner):
                 Name of the new adapter.
             combination_type (`str`):
                 The merging type can be one of [`svd`, `linear`, `cat`, `ties`, `ties_svd`, `dare_ties`, `dare_linear`,
-                `dare_ties_svd`, `dare_linear_svd`, `magnitude_prune`, `magnitude_prune_svd`]. When using the `cat`
-                combination_type, the rank of the resulting adapter is equal to the sum of all adapters ranks (the
-                mixed adapter may be too big and result in OOM errors).
+                `dare_ties_svd`, `dare_linear_svd`, `magnitude_prune`, `magnitude_prune_svd`, `breadcrumbs`]. When
+                using the `cat` combination_type, the rank of the resulting adapter is equal to the sum of all
+                adapters ranks (the mixed adapter may be too big and result in OOM errors).
             svd_rank (`int`, *optional*):
                 Rank of output adapter for svd. If None provided, will use max rank of merging adapters.
             svd_clamp (`float`, *optional*):
@@ -709,10 +710,13 @@ class LoraModel(BaseTuner):
             density (`float`, *optional*):
                 Value between 0 and 1. 0 means all values are pruned and 1 means no values are pruned. Should be used
                 with [`ties`, `ties_svd`, `dare_ties`, `dare_linear`, `dare_ties_svd`, `dare_linear_svd`,
-                `magnintude_prune`, `magnitude_prune_svd`]
+                `magnintude_prune`, `magnitude_prune_svd`, `breadcrumbs`]
             majority_sign_method (`str`):
                 The method, should be one of ["total", "frequency"], to use to get the magnitude of the sign values.
-                Should be used with [`ties`, `ties_svd`, `dare_ties`, `dare_ties_svd`]
+                Should be used with [`ties`, `ties_svd`, `dare_ties`, `dare_ties_svd`, `breadcrumbs`]
+            gamma (`float`, *optional*):
+                Value between 0 and `density`. The fraction of the largest values to prune as outliers. Should be used
+                with [`breadcrumbs`]. If None is provided, no outlier pruning is performed. Defaults to None.
         """
 
         if adapter_name in list(self.peft_config.keys()):
@@ -793,9 +797,16 @@ class LoraModel(BaseTuner):
                         full_matrices=svd_full_matrices,
                         driver=svd_driver,
                     )
-                elif combination_type in ["linear", "ties", "dare_linear", "dare_ties", "magnitude_prune"]:
+                elif combination_type in [
+                    "linear",
+                    "ties",
+                    "dare_linear",
+                    "dare_ties",
+                    "magnitude_prune",
+                    "breadcrumbs",
+                ]:
                     target_lora_A.data, target_lora_B.data = self._generalized_task_arithmetic_weighted_adapter(
-                        combination_type, adapters, weights, target, density, majority_sign_method
+                        combination_type, adapters, weights, target, density, majority_sign_method, gamma
                     )
 
     def _svd_generalized_task_arithmetic_weighted_adapter(
@@ -874,6 +885,7 @@ class LoraModel(BaseTuner):
         target,
         density,
         majority_sign_method,
+        gamma=None,
     ):
         # account weights for LoRA A and B layers.
         valid_weights_A = []
@@ -913,6 +925,10 @@ class LoraModel(BaseTuner):
                 lora_deltas[i] = dare_ties(task_tensors, valid_weights[i], density, majority_sign_method)
             elif combination_type == "magnitude_prune":
                 lora_deltas[i] = magnitude_prune(task_tensors, valid_weights[i], density)
+            elif combination_type == "breadcrumbs":
+                lora_deltas[i] = breadcrumbs(
+                    task_tensors, valid_weights[i], density, gamma if gamma is not None else 0.0, majority_sign_method
+                )
             else:
                 raise ValueError("Invalid combination type")
         lora_deltas = [delta.to(dtype) for delta in lora_deltas]

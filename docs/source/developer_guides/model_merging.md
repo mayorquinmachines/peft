@@ -85,6 +85,20 @@ model.add_weighted_adapter(adapters, weights, adapter_name, combination_type="da
 ```
 
 </hfoption>
+<hfoption id="Breadcrumbs">
+
+Model Breadcrumbs extends TIES by also pruning the `gamma` fraction of the largest magnitude values, which can be outliers that interfere with the merge.
+
+```py
+adapters = ["norobots", "adcopy", "sql"]
+weights = [2.0, 1.0, 1.0]
+adapter_name = "merge"
+density = 0.2
+gamma = 0.01
+model.add_weighted_adapter(adapters, weights, adapter_name, combination_type="breadcrumbs", density=density, gamma=gamma)
+```
+
+</hfoption>
 </hfoptions>
 
 Set the newly merged model as the active model with the [`~LoraModel.set_adapter`] method.

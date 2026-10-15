@@ -53,6 +53,28 @@ def magnitude_based_pruning(tensor: torch.Tensor, density: float) -> torch.Tenso
     return tensor * mask.reshape(tensor.shape)
 
 
+def breadcrumbs_prune(tensor: torch.Tensor, density: float, gamma: float) -> torch.Tensor:
+    """
+    Prune the smallest values of the task tensor, like `magnitude_based_pruning`, but additionally prune the `gamma`
+    fraction of the largest values, which are considered outliers.
+
+    Args:
+        tensor (`torch.Tensor`):The tensor to prune.
+        density (`float`):The fraction of values to preserve after pruning the smallest values. Should be in [0,1].
+        gamma (`float`):The fraction of the largest values to prune as outliers. Should be in [0, density).
+
+    Returns:
+        `torch.Tensor`: The tensor with the pruned weights.
+    """
+    mask = torch.zeros_like(tensor).reshape(-1)
+    k = int(density * tensor.numel())
+    k_top = int(gamma * tensor.numel())
+    top_k = torch.topk(tensor.abs().reshape(-1), k=k, largest=True)
+    # keep the values ranked between the outliers (already pruned by k_top) and the smallest values (pruned by k)
+    mask[top_k[1][k_top:]] = 1
+    return tensor * mask.reshape(tensor.shape)
+
+
 def random_pruning(tensor: torch.Tensor, density: float, rescale: bool) -> torch.Tensor:
     """
     Prune random values based on the specified fraction `density`.
@@ -203,6 +225,42 @@ def ties(
     """
     # sparsify
     task_tensors = [prune(tensor, density, method="magnitude") for tensor in task_tensors]
+    task_tensors = torch.stack(task_tensors, dim=0)
+    # Elect Sign
+    majority_sign_mask = calculate_majority_sign_mask(task_tensors, method=majority_sign_method)
+    # weighted task tensors
+    weights = reshape_weight_task_tensors(task_tensors, weights)
+    weighted_task_tensors = task_tensors * weights
+    # Disjoint Merge
+    mixed_task_tensors = disjoint_merge(weighted_task_tensors, majority_sign_mask)
+    return mixed_task_tensors
+
+
+def breadcrumbs(
+    task_tensors: list[torch.Tensor],
+    weights: torch.Tensor,
+    density: float,
+    gamma: float,
+    majority_sign_method: Literal["total", "frequency"] = "total",
+) -> torch.Tensor:
+    """
+    Merge the task tensors using `model breadcrumbs`.
+
+    Args:
+        task_tensors(`List[torch.Tensor]`):The task tensors to merge.
+        weights (`torch.Tensor`):The weights of the task tensors.
+        density (`float`):The fraction of values to preserve. Should be in [0,1].
+        gamma (`float`):The fraction of the largest values to prune as outliers. Should be in [0, density).
+        majority_sign_method (`str`):
+            The method to use to get the majority sign mask. Should be one of ["total", "frequency"].
+
+    Returns:
+        `torch.Tensor`: The merged tensor.
+    """
+    if gamma >= density:
+        raise ValueError(f"gamma should be smaller than density to preserve any values, got {gamma} >= {density}")
+    # sparsify
+    task_tensors = [breadcrumbs_prune(tensor, density, gamma) for tensor in task_tensors]
     task_tensors = torch.stack(task_tensors, dim=0)
     # Elect Sign
     majority_sign_mask = calculate_majority_sign_mask(task_tensors, method=majority_sign_method)

@@ -1588,6 +1588,16 @@ class PeftCommonTester:
             density=0.5,
         )
 
+        # test breadcrumbs re-weighting with multiple adapters
+        model.add_weighted_adapter(
+            adapter_list[:2],
+            weight_list[:2],
+            "multi_adapter_breadcrumbs_reweighting",
+            combination_type="breadcrumbs",
+            density=0.5,
+            gamma=0.1,
+        )
+
         # test linear re-weighting with multiple adapters with only first adapter having non zero weight
         model.add_weighted_adapter(
             adapter_list[:2],
@@ -1640,6 +1650,16 @@ class PeftCommonTester:
                 density=0.5,
             )
 
+        with pytest.raises(ValueError):
+            model.add_weighted_adapter(
+                adapter_list[1:],
+                weight_list[1:],
+                "multi_adapter_breadcrumbs_reweighting_uneven_r",
+                combination_type="breadcrumbs",
+                density=0.5,
+                gamma=0.1,
+            )
+
         new_adapters = [
             "single_adapter_reweighting",
             "multi_adapter_svd_reweighting",
@@ -1654,6 +1674,7 @@ class PeftCommonTester:
             "multi_adapter_dare_linear_reweighting",
             "multi_adapter_dare_ties_reweighting",
             "multi_adapter_magnitude_prune_reweighting",
+            "multi_adapter_breadcrumbs_reweighting",
         ]
         for new_adapter in new_adapters:
             assert new_adapter in model.peft_config
