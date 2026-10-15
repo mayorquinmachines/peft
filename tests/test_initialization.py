@@ -71,6 +71,7 @@ from peft.tuners.lora.corda import preprocess_corda
 from peft.tuners.lora.layer import LoraLayer
 from peft.utils import infer_device
 from peft.utils.hotswap import hotswap_adapter, prepare_model_for_compiled_hotswap
+from peft.utils.normalized_init import normalize_lora_down_projection
 from peft.utils.other import ModulesToSaveWrapper
 
 from .testing_utils import hub_online_once, require_deterministic_for_xpu
@@ -292,6 +293,64 @@ class TestLoraInitialization:
         # with init_lora_weights=False, weight B should *not* be zero. We don't care so much about the actual values
         # as long as they are not zero, in order to avoid identity transformation.
         assert not torch.allclose(weight_B, torch.zeros_like(weight_B))
+
+    def test_lora_linear_init_nora(self):
+        # NoRA: each column of the down-projection A is normalized to unit L2 norm, B stays zero
+        torch.manual_seed(0)
+
+        model = self.get_model()
+        config = LoraConfig(target_modules=["linear"], init_lora_weights="nora")
+        model = get_peft_model(model, config)
+        weight_A = model.linear.lora_A["default"].weight
+        weight_B = model.linear.lora_B["default"].weight
+
+        # check that each column of A (along the rank dimension) has unit L2 norm
+        column_norms = weight_A.detach().norm(dim=0)
+        assert torch.allclose(column_norms, torch.ones_like(column_norms), atol=1e-5)
+
+        # check that weight B is zero, i.e. the adapter is an identity transform at init
+        assert (weight_B == 0.0).all()
+
+    def test_lora_conv2d_init_nora(self):
+        # NoRA also applies to conv layers: each fiber of A along the rank dimension has unit norm
+        torch.manual_seed(0)
+
+        model = self.get_model()
+        config = LoraConfig(target_modules=["conv2d"], init_lora_weights="nora")
+        model = get_peft_model(model, config)
+        weight_A = model.conv2d.lora_A["default"].weight
+        weight_B = model.conv2d.lora_B["default"].weight
+
+        column_norms = weight_A.detach().norm(dim=0)
+        assert torch.allclose(column_norms, torch.ones_like(column_norms), atol=1e-5)
+
+        # check that weight B is zero
+        assert (weight_B == 0.0).all()
+
+    def test_lora_embedding_nora(self):
+        # embedding falls back to the default initialization, same as for init_lora_weights="gaussian"
+        torch.manual_seed(0)
+
+        model = self.get_model()
+        config = LoraConfig(target_modules=["embed"], init_lora_weights="nora")
+        model = get_peft_model(model, config)
+        weight_A = model.embed.lora_embedding_A["default"]
+
+        # check that weight A is zero
+        assert (weight_A == 0.0).all()
+
+    def test_lora_init_nora_helper(self):
+        # direct test of the normalization helper: works in place and leaves unit-norm columns
+        weight = torch.randn(8, 16)
+        normalize_lora_down_projection(weight)
+
+        column_norms = weight.norm(dim=0)
+        assert torch.allclose(column_norms, torch.ones_like(column_norms), atol=1e-5)
+
+        # zero columns stay zero instead of producing NaNs
+        weight = torch.zeros(8, 16)
+        normalize_lora_down_projection(weight)
+        assert (weight == 0.0).all()
 
     def test_lora_init_orthogonal(self):
         torch.manual_seed(0)

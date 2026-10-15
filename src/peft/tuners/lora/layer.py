@@ -42,6 +42,7 @@ from peft.utils.integrations import (
     skip_init_on_device,
 )
 from peft.utils.loftq_utils import loftq_init
+from peft.utils.normalized_init import normalize_lora_down_projection
 from peft.utils.other import transpose
 from peft.utils.warning import PeftWarning
 
@@ -334,6 +335,11 @@ class LoraLayer(BaseTunerLayer):
                     nn.init.kaiming_uniform_(self.lora_A[adapter_name].weight, a=math.sqrt(5))
                 elif init_lora_weights.lower() == "gaussian":
                     nn.init.normal_(self.lora_A[adapter_name].weight, std=1 / self.r[adapter_name])
+                elif init_lora_weights.lower() == "nora":
+                    # NoRA (init-only): default Kaiming-uniform init, then normalize each column of the
+                    # down-projection A (along the rank dimension) to unit L2 norm, B stays zero.
+                    nn.init.kaiming_uniform_(self.lora_A[adapter_name].weight, a=math.sqrt(5))
+                    normalize_lora_down_projection(self.lora_A[adapter_name].weight)
                 else:
                     raise ValueError(f"Unknown initialization {init_lora_weights=}")
                 nn.init.zeros_(self.lora_B[adapter_name].weight)
