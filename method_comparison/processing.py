@@ -35,6 +35,7 @@ _TASK_METRIC_PREFERENCES = {
     "MetaMathQA": {
         "test_accuracy": "higher",
         "forgetting*": "lower",
+        "merge_densification*": "lower",
     },
     "image-gen": {
         "test_dino_similarity": "higher",
@@ -50,7 +51,10 @@ _TASK_PARETO_DEFAULTS = {
 _METRIC_EXPLANATIONS = {
     "MetaMathQA": (
         "*forgetting: This is the reduction in CE loss on a sample of Wikipedia data and reflects how much the "
-        "model 'forgot' during training. The lower the number, the better."
+        "model 'forgot' during training. The lower the number, the better. *merge_densification: For pruned "
+        "(sparse) base models, this is the fraction of pruned weight entries that merging the adapter update "
+        "would fill back in with nonzero values. The lower the number, the more of the pruning benefit is "
+        "preserved. It is 0 for dense base models."
     ),
     "image-gen": (
         "*drift: This measures how much the generated images drift from the base model's outputs on unrelated "
@@ -112,6 +116,10 @@ def _preprocess_metamathqa(dct, train_metrics, meta_info):
     dct["test_accuracy"] = train_metrics["test accuracy"]
     dct["train_total_tokens"] = train_metrics["train total tokens"]
     dct["forgetting*"] = train_metrics.get("forgetting", 123)
+    # sparsity metrics produced by MetaMathQA/sparsity_preservation.py (get_model_sparsity_metrics); default to
+    # 0.0 for result rows from before these metrics were logged (dense base models)
+    dct["base_weight_sparsity"] = train_metrics.get("base weight sparsity", 0.0)
+    dct["merge_densification*"] = train_metrics.get("merge densification", 0.0)
     dct["bitsandbytes_version"] = meta_info["package_info"]["bitsandbytes-version"]
 
 
@@ -197,6 +205,8 @@ _TASK_DTYPES = {
         "test_accuracy": float,
         "train_total_tokens": int,
         "forgetting*": float,
+        "base_weight_sparsity": float,
+        "merge_densification*": float,
         "bitsandbytes_version": "string",
     },
     "image-gen": {
@@ -222,6 +232,8 @@ _TASK_IMPORTANT_COLUMNS = {
         "created_at",
         "task_name",
         "forgetting*",
+        "base_weight_sparsity",
+        "merge_densification*",
     ],
     "image-gen": [
         "experiment_name",

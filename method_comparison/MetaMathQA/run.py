@@ -30,6 +30,7 @@ from functools import partial
 from typing import Any, Literal, Optional
 
 import torch
+from sparsity_preservation import get_model_sparsity_metrics
 from torch import nn
 from torch.amp import GradScaler, autocast
 from tqdm import tqdm
@@ -388,6 +389,8 @@ def train(
                 "train samples": total_samples,
                 "train total tokens": sum(total_tokens),
                 "forgetting": forgetting,
+                # sparsity of the (possibly pruned) base weights and how much of it a merge would densify
+                **get_model_sparsity_metrics(model),
             }
         )
         print_verbose(f"Test accuracy: {accuracy:.3f}")
